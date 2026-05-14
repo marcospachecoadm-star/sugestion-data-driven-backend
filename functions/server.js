@@ -3,6 +3,10 @@
 const cors = require("cors");
 const express = require("express");
 const admin = require("firebase-admin");
+const csv = require("csv-parser");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const app = express();
 app.use(cors());
@@ -21,7 +25,7 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "SugestionDataDriven Backend",
-    routes: ["/health", "/run-analytics"],
+    routes: ["/health", "/import-storage-csv", "/import-and-run", "/run-analytics"],
   });
 });
 
@@ -29,17 +33,34 @@ app.get("/health", (_req, res) => {
   res.json({ok: true, status: "online"});
 });
 
-app.get("/run-analytics", requireApiKey, async (_req, res) => {
-  await handleRunAnalytics(res);
+app.get("/run-analytics", requireApiKey, async (req, res) => {
+  await handleRunAnalytics(req, res);
 });
 
-app.post("/run-analytics", requireApiKey, async (_req, res) => {
-  await handleRunAnalytics(res);
+app.post("/run-analytics", requireApiKey, async (req, res) => {
+  await handleRunAnalytics(req, res);
 });
 
-async function handleRunAnalytics(res) {
+app.get("/import-storage-csv", requireApiKey, async (req, res) => {
+  await handleImportStorageCsv(req, res, false);
+});
+
+app.post("/import-storage-csv", requireApiKey, async (req, res) => {
+  await handleImportStorageCsv(req, res, false);
+});
+
+app.get("/import-and-run", requireApiKey, async (req, res) => {
+  await handleImportStorageCsv(req, res, true);
+});
+
+app.post("/import-and-run", requireApiKey, async (req, res) => {
+  await handleImportStorageCsv(req, res, true);
+});
+
+async function handleRunAnalytics(req, res) {
   try {
-    const summary = await rebuildAnalytics();
+    const empresaId = getEmpresaIdFromRequest(req);
+    const summary = await rebuildAnalytics(empresaId);
     res.json({ok: true, summary});
   } catch (error) {
     console.error(error);
@@ -50,14 +71,216 @@ async function handleRunAnalytics(res) {
   }
 }
 
-async function rebuildAnalytics() {
+async function handleImportStorageCsv(req, res, shouldRunAnalytics) {
+  try {
+    const requestedEmpresaId = getEmpresaIdFromRequest(req);
+    const importSummary = await processarUploadsPendentes(requestedEmpresaId);
+    const empresas = requestedEmpresaId ?
+      [requestedEmpresaId] :
+      [...new Set(importSummary.resultados
+        .filter((item) => item.empresaId)
+        .map((item) => item.empresaId))];
+
+    const analyticsSummary = [];
+    if (shouldRunAnalytics) {
+      for (const empresaId of empresas) {
+        analyticsSummary.push(await rebuildAnalytics(empresaId));
+      }
+    }
+
+    res.json({
+      ok: true,
+      importacao: importSummary,
+      analytics: analyticsSummary,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Erro desconhecido",
+    });
+  }
+}
+
+async function processarUploadsPendentes(empresaId = null) {
+  const bucket = admin.storage().bucket();
+  const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
+  const [files] = await bucket.getFiles({prefix});
+  const resultados = [];
+
+  for (const file of files) {
+    if (file.name.endsWith("/") || !file.name.toLowerCase().endsWith(".csv")) {
+      continue;
+    }
+
+    resultados.push(await processarArquivoCsv(bucket, file.name));
+  }
+
+  return {
+    total: resultados.length,
+    resultados,
+  };
+}
+
+async function processarArquivoCsv(bucket, filePath) {
+  if (!filePath || !filePath.startsWith("uploads/")) {
+    return {status: "ignorado", filePath};
+  }
+
+  const fileName = path.basename(filePath);
+  const tempFilePath = path.join(os.tmpdir(), `${Date.now()}_${fileName}`);
+  let destinoErro = `erro/${fileName}`;
+
+  try {
+    const dadosArquivo = identificarArquivo(filePath);
+    const empresaId = dadosArquivo.empresaId;
+    const nomeColecao = obterNomeColecao(dadosArquivo.tipoArquivo);
+    const destinoProcessada = `processada/${empresaId}/${dadosArquivo.fileName}`;
+    destinoErro = `erro/${empresaId}/${dadosArquivo.fileName}`;
+
+    await bucket.file(filePath).download({destination: tempFilePath});
+
+    const linhas = await lerCsv(tempFilePath, empresaId);
+    await salvarLinhasNoFirestore(nomeColecao, linhas);
+    await bucket.file(filePath).move(destinoProcessada);
+
+    return {
+      status: "processado",
+      empresaId,
+      filePath,
+      destino: destinoProcessada,
+      colecao: nomeColecao,
+      linhas: linhas.length,
+    };
+  } catch (error) {
+    console.error("Erro ao processar CSV:", filePath, error);
+
+    try {
+      await bucket.file(filePath).move(destinoErro);
+    } catch (moveError) {
+      console.error("Erro ao mover arquivo para erro:", moveError);
+    }
+
+    return {
+      status: "erro",
+      filePath,
+      destino: destinoErro,
+      erro: error && error.message ? error.message : String(error),
+    };
+  } finally {
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath);
+    }
+  }
+}
+
+function identificarArquivo(filePath) {
+  const partes = filePath.split("/");
+  const fileName = path.basename(filePath);
+  const nomeSemExtensao = path.basename(fileName, ".csv");
+
+  const match = nomeSemExtensao.match(
+    /^(.+)_(vendas|estoque|produto|produtos)_\d{2}_\d{2}_\d{4}$/i,
+  );
+
+  if (match) {
+    return {
+      empresaId: match[1],
+      tipoArquivo: match[2].toLowerCase(),
+      fileName,
+    };
+  }
+
+  if (partes.length >= 3) {
+    return {
+      empresaId: partes[1],
+      tipoArquivo: nomeSemExtensao.toLowerCase(),
+      fileName,
+    };
+  }
+
+  throw new Error(`Nome de arquivo invalido: ${fileName}`);
+}
+
+function obterNomeColecao(tipoArquivo) {
+  if (tipoArquivo === "produto" || tipoArquivo === "produtos") {
+    return "produtos";
+  }
+
+  if (tipoArquivo === "vendas") {
+    return "vendas";
+  }
+
+  if (tipoArquivo === "estoque") {
+    return "estoque";
+  }
+
+  throw new Error(`Tipo de arquivo invalido: ${tipoArquivo}`);
+}
+
+function lerCsv(tempFilePath, empresaId) {
+  return new Promise((resolve, reject) => {
+    const linhas = [];
+
+    fs.createReadStream(tempFilePath)
+      .pipe(csv({
+        separator: ",",
+        mapHeaders: ({header}) => header.trim().replace(/^\uFEFF/, ""),
+        mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
+      }))
+      .on("data", (data) => {
+        const itemTratado = {};
+
+        for (const chaveOriginal in data) {
+          const chave = chaveOriginal.trim().replace(/^\uFEFF/, "");
+          itemTratado[chave] = converterValorCsv(chave, data[chaveOriginal]);
+        }
+
+        itemTratado.empresa_id = empresaId;
+        linhas.push(itemTratado);
+      })
+      .on("end", () => resolve(linhas))
+      .on("error", reject);
+  });
+}
+
+async function salvarLinhasNoFirestore(nomeColecao, linhas) {
+  const writer = new BatchWriter(db);
+
+  for (const item of linhas) {
+    let documentId = item.id;
+
+    if (nomeColecao === "estoque") {
+      documentId = item.produto_id || item.id;
+    }
+
+    if (nomeColecao === "produtos") {
+      documentId = item.id || item.produto_id || item.codigo || item.cod_produto;
+    }
+
+    if (nomeColecao === "vendas") {
+      documentId = item.venda_id || item.id || db.collection(nomeColecao).doc().id;
+    }
+
+    if (!documentId) {
+      documentId = db.collection(nomeColecao).doc().id;
+    }
+
+    const tenantDocId = `${safeDocId(item.empresa_id)}_${safeDocId(String(documentId).trim())}`;
+    await writer.set(db.collection(nomeColecao).doc(tenantDocId), item);
+  }
+
+  await writer.commit();
+}
+
+async function rebuildAnalytics(empresaId = null) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - WINDOW_DAYS);
 
   const [productsSnap, stockSnap, salesSnap] = await Promise.all([
-    db.collection("produtos").get(),
-    db.collection("estoque").get(),
-    db.collection("vendas").get(),
+    getTenantCollection("produtos", empresaId),
+    getTenantCollection("estoque", empresaId),
+    getTenantCollection("vendas", empresaId),
   ]);
 
   const metricsByProduct = new Map();
@@ -105,12 +328,12 @@ async function rebuildAnalytics() {
   );
 
   await Promise.all([
-    replaceCollection("ranking_vendas", metricsList, toRankingDoc),
-    replaceCollection("curva_abc", metricsList, toCurvaAbcDoc),
-    replaceCollection("previsao_ruptura", metricsList, toRupturaDoc),
-    replaceCollection("sugestoes_compra", sugestoes, toSugestaoCompraDoc),
-    replaceCollection("produtos_mortos", produtosMortos, toProdutoMortoDoc),
-    replaceCollection("alertas", alertas, (alerta) => alerta),
+    replaceCollection("ranking_vendas", metricsList, toRankingDoc, empresaId),
+    replaceCollection("curva_abc", metricsList, toCurvaAbcDoc, empresaId),
+    replaceCollection("previsao_ruptura", metricsList, toRupturaDoc, empresaId),
+    replaceCollection("sugestoes_compra", sugestoes, toSugestaoCompraDoc, empresaId),
+    replaceCollection("produtos_mortos", produtosMortos, toProdutoMortoDoc, empresaId),
+    replaceCollection("alertas", alertas, (alerta) => alerta, empresaId),
   ]);
 
   const totalVendas = sum(metricsList, (item) => item.totalVendido);
@@ -118,8 +341,10 @@ async function rebuildAnalytics() {
   const giroMedio = average(metricsList, (item) => item.mediaVendaDia);
   const itensCriticos = metricsList.filter((item) => item.risco === "alto").length;
 
-  await db.doc("insights/dashboard").set(
+  const dashboardDocId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
+  await db.doc(`insights/${dashboardDocId}`).set(
     {
+      empresa_id: empresaId || null,
       giro_medio: round(giroMedio),
       itens_criticos: itensCriticos,
       alertas_pendentes: alertas.length,
@@ -135,6 +360,7 @@ async function rebuildAnalytics() {
   );
 
   return {
+    empresaId: empresaId || null,
     produtosProcessados: metricsList.length,
     vendasProcessadas,
     sugestoesCompra: sugestoes.length,
@@ -189,9 +415,71 @@ function requireApiKey(req, res, next) {
   next();
 }
 
+function getEmpresaIdFromRequest(req) {
+  const value = req.query.empresaId || req.query.empresa_id || req.header("x-empresa-id");
+  return value ? String(value).trim() : null;
+}
+
+async function getTenantCollection(collectionName, empresaId) {
+  if (!empresaId) {
+    return db.collection(collectionName).get();
+  }
+
+  return db.collection(collectionName).where("empresa_id", "==", empresaId).get();
+}
+
+function converterValorCsv(chave, valor) {
+  const campoId =
+    chave === "id" ||
+    chave === "produto_id" ||
+    chave === "venda_id" ||
+    chave.endsWith("_id");
+
+  if (typeof valor === "string") {
+    valor = valor.trim();
+  }
+
+  if (valor === "") {
+    return "";
+  }
+
+  if (valor === "true") {
+    return true;
+  }
+
+  if (valor === "false") {
+    return false;
+  }
+
+  if (campoId) {
+    return String(valor).trim();
+  }
+
+  if (typeof valor === "string") {
+    let numero = valor;
+    const temVirgula = numero.includes(",");
+    const temPonto = numero.includes(".");
+
+    if (temVirgula && temPonto && numero.lastIndexOf(",") > numero.lastIndexOf(".")) {
+      numero = numero.replace(/\./g, "").replace(",", ".");
+    } else if (temVirgula && temPonto && numero.lastIndexOf(".") > numero.lastIndexOf(",")) {
+      numero = numero.replace(/,/g, "");
+    } else if (temVirgula && !temPonto) {
+      numero = numero.replace(",", ".");
+    }
+
+    if (!isNaN(numero) && numero !== "") {
+      return Number(numero);
+    }
+  }
+
+  return valor;
+}
+
 function createEmptyMetrics(produtoId, data) {
   return {
     produtoId,
+    empresaId: firstString(data, ["empresa_id", "empresaId", "tenant_id"], null),
     produtoNome: firstString(data, ["produto_nome", "nome", "descricao"], produtoId),
     categoria: firstString(data, ["categoria", "departamento"], "Sem categoria"),
     estoqueAtual: firstNumber(data, ["estoque_atual", "quantidade_estoque", "saldo"], 0),
@@ -294,6 +582,7 @@ function buildAlerts(metricsList) {
     if (item.risco === "alto") {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_ruptura`,
+        empresa_id: item.empresaId || null,
         tipo: "ruptura",
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
@@ -309,6 +598,7 @@ function buildAlerts(metricsList) {
     if (item.mediaVendaDia > 0 && item.diasCobertura !== null && item.diasCobertura > item.diasCoberturaAlvo * 2) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_excesso`,
+        empresa_id: item.empresaId || null,
         tipo: "excesso_estoque",
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
@@ -325,9 +615,11 @@ function buildAlerts(metricsList) {
   return alerts;
 }
 
-async function replaceCollection(collectionName, rows, mapper) {
+async function replaceCollection(collectionName, rows, mapper, empresaId = null) {
   const collectionRef = db.collection(collectionName);
-  const existing = await collectionRef.get();
+  const existing = empresaId ?
+    await collectionRef.where("empresa_id", "==", empresaId).get() :
+    await collectionRef.get();
   const writer = new BatchWriter(db);
 
   for (const doc of existing.docs) {
@@ -336,8 +628,10 @@ async function replaceCollection(collectionName, rows, mapper) {
 
   for (const row of rows) {
     const rawId = row.id || row.produtoId || cryptoSafeId();
-    await writer.set(collectionRef.doc(safeDocId(rawId)), {
+    const tenantPrefix = empresaId ? `${safeDocId(empresaId)}_` : "";
+    await writer.set(collectionRef.doc(`${tenantPrefix}${safeDocId(rawId)}`), {
       ...mapper(row),
+      empresa_id: empresaId || row.empresaId || null,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
@@ -347,6 +641,7 @@ async function replaceCollection(collectionName, rows, mapper) {
 
 function toRankingDoc(item) {
   return {
+    empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
@@ -360,6 +655,7 @@ function toRankingDoc(item) {
 
 function toCurvaAbcDoc(item) {
   return {
+    empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
@@ -372,6 +668,7 @@ function toCurvaAbcDoc(item) {
 
 function toRupturaDoc(item) {
   return {
+    empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
@@ -385,6 +682,7 @@ function toRupturaDoc(item) {
 
 function toSugestaoCompraDoc(item) {
   return {
+    empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
@@ -403,6 +701,7 @@ function toSugestaoCompraDoc(item) {
 
 function toProdutoMortoDoc(item) {
   return {
+    empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
