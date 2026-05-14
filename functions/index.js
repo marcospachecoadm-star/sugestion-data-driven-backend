@@ -5,7 +5,24 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-admin.initializeApp();
+const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
+
+admin.initializeApp({
+  storageBucket: getStorageBucketName(),
+});
+
+function getStorageBucketName() {
+  const explicitBucket = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
+  if (explicitBucket) {
+    return explicitBucket;
+  }
+
+  return DEFAULT_STORAGE_BUCKET;
+}
+
+function getStorageBucket(bucketName) {
+  return admin.storage().bucket(bucketName || getStorageBucketName());
+}
 
 // =====================================================
 // IMPORTACAO CSV -> FIRESTORE
@@ -423,7 +440,7 @@ exports.testeUpload = functions
   .onFinalize(async (object) => {
     console.log("Arquivo enviado");
 
-    const bucket = admin.storage().bucket(object.bucket);
+    const bucket = getStorageBucket(object.bucket);
 
     await processarArquivoCsv(bucket, object.name);
 
@@ -441,7 +458,7 @@ exports.processarUploadsPendentes = functions
       return;
     }
 
-    const bucket = admin.storage().bucket();
+    const bucket = getStorageBucket();
 
     try {
       const [files] = await bucket.getFiles({ prefix: "uploads/" });

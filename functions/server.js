@@ -434,9 +434,9 @@ function initializeFirebase() {
 }
 
 function getStorageBucketName(projectId = null) {
-  const explicitBucket = process.env.FIREBASE_STORAGE_BUCKET;
+  const explicitBucket = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
   if (explicitBucket) {
-    return explicitBucket.trim();
+    return explicitBucket;
   }
 
   if (admin.apps.length > 0 && admin.app().options.storageBucket) {
