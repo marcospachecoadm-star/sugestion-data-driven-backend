@@ -17,6 +17,48 @@ const DEFAULT_COVERAGE_TARGET_DAYS = 30;
 const DEFAULT_SAFETY_DAYS = 7;
 const DEAD_STOCK_MIN_UNITS = 1;
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
+const PRODUCT_ID_KEYS = ["produto_id", "id", "sku", "codigo", "cod_produto"];
+const STOCK_QUANTITY_KEYS = [
+  "estoque_atual",
+  "quantidade_estoque",
+  "quantidade",
+  "qtd",
+  "qtde",
+  "saldo",
+  "estoque",
+];
+const SALES_QUANTITY_KEYS = ["quantidade_vendida", "quantidade", "qtd", "qtde", "qty"];
+const SALES_TOTAL_KEYS = [
+  "total_vendido",
+  "valor_total",
+  "total",
+  "receita",
+  "valor",
+  "valor_venda",
+  "preco_total",
+  "vl_total",
+  "vlr_total",
+  "valor_liquido",
+  "valor_bruto",
+  "total_item",
+  "valor_item",
+  "vl_item",
+  "vlr_item",
+  "valor_final",
+  "valor_pago",
+  "faturamento",
+  "subtotal",
+];
+const UNIT_PRICE_KEYS = [
+  "preco_unitario",
+  "valor_unitario",
+  "preco",
+  "valor_produto",
+  "preco_venda",
+  "vl_unitario",
+  "vlr_unitario",
+];
+const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco"];
 
 initializeFirebase();
 
@@ -323,7 +365,7 @@ async function rebuildAnalytics(empresaId = null) {
     const data = doc.data();
     const produtoId = normalizeId(data, doc.id);
     const metrics = getOrCreateMetrics(metricsByProduct, produtoId, data);
-    metrics.estoqueAtual = firstNumber(data, ["estoque_atual", "quantidade_estoque", "saldo"], metrics.estoqueAtual);
+    metrics.estoqueAtual = firstNumber(data, STOCK_QUANTITY_KEYS, metrics.estoqueAtual);
     metrics.estoqueDesejado = firstNumber(data, ["estoque_desejado"], metrics.estoqueDesejado);
     metrics.diasCoberturaAlvo = firstNumber(data, ["dias_cobertura_alvo"], metrics.diasCoberturaAlvo);
     metrics.diasSeguranca = firstNumber(data, ["dias_seguranca"], metrics.diasSeguranca);
@@ -341,8 +383,12 @@ async function rebuildAnalytics(empresaId = null) {
     vendasProcessadas += 1;
     const produtoId = normalizeId(data, doc.id);
     const metrics = getOrCreateMetrics(metricsByProduct, produtoId, data);
-    metrics.quantidadeVendida += firstNumber(data, ["quantidade_vendida", "quantidade", "qty"], 0);
-    metrics.totalVendido += firstNumber(data, ["total_vendido", "valor_total", "total", "receita"], 0);
+    const quantidadeVendida = firstNumber(data, SALES_QUANTITY_KEYS, 0);
+    const totalVendido = firstNumber(data, SALES_TOTAL_KEYS, null);
+    const precoUnitario = firstNumber(data, UNIT_PRICE_KEYS, 0);
+
+    metrics.quantidadeVendida += quantidadeVendida;
+    metrics.totalVendido += totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
     mergeProductIdentity(metrics, data);
   }
 
@@ -482,11 +528,30 @@ function getEmpresaIdFromRequest(req) {
 }
 
 async function getTenantCollection(collectionName, empresaId) {
+  const collectionRef = db.collection(collectionName);
+
   if (!empresaId) {
-    return db.collection(collectionName).get();
+    return collectionRef.get();
   }
 
-  return db.collection(collectionName).where("empresa_id", "==", empresaId).get();
+  const tenantPrefix = `${safeDocId(empresaId)}_`;
+  const [tenantSnap, allSnap] = await Promise.all([
+    collectionRef.where("empresa_id", "==", empresaId).get(),
+    collectionRef.get(),
+  ]);
+  const docsByPath = new Map();
+
+  for (const doc of tenantSnap.docs) {
+    docsByPath.set(doc.ref.path, doc);
+  }
+
+  for (const doc of allSnap.docs) {
+    if (doc.id.startsWith(tenantPrefix)) {
+      docsByPath.set(doc.ref.path, doc);
+    }
+  }
+
+  return {docs: Array.from(docsByPath.values())};
 }
 
 function converterValorCsv(chave, valor) {
@@ -543,13 +608,13 @@ function createEmptyMetrics(produtoId, data) {
     empresaId: firstString(data, ["empresa_id", "empresaId", "tenant_id"], null),
     produtoNome: firstString(data, ["produto_nome", "nome", "descricao"], produtoId),
     categoria: firstString(data, ["categoria", "departamento"], "Sem categoria"),
-    estoqueAtual: firstNumber(data, ["estoque_atual", "quantidade_estoque", "saldo"], 0),
+    estoqueAtual: firstNumber(data, STOCK_QUANTITY_KEYS, 0),
     estoqueDesejado: firstNumber(data, ["estoque_desejado"], 0),
     diasCoberturaAlvo: firstNumber(data, ["dias_cobertura_alvo"], DEFAULT_COVERAGE_TARGET_DAYS),
     diasSeguranca: firstNumber(data, ["dias_seguranca"], DEFAULT_SAFETY_DAYS),
-    quantidadeVendida: firstNumber(data, ["quantidade_vendida"], 0),
-    totalVendido: firstNumber(data, ["total_vendido"], 0),
-    custoUnitario: firstNumber(data, ["custo_unitario", "preco_compra", "preco"], 0),
+    quantidadeVendida: firstNumber(data, SALES_QUANTITY_KEYS, 0),
+    totalVendido: firstNumber(data, SALES_TOTAL_KEYS, 0),
+    custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
     mediaVendaDia: 0,
     diasCobertura: null,
     risco: "baixo",
@@ -577,10 +642,16 @@ function getOrCreateMetrics(metricsByProduct, produtoId, data) {
 function mergeProductIdentity(metrics, data) {
   metrics.produtoNome = firstString(data, ["produto_nome", "nome", "descricao"], metrics.produtoNome);
   metrics.categoria = firstString(data, ["categoria", "departamento"], metrics.categoria);
-  metrics.custoUnitario = firstNumber(data, ["custo_unitario", "preco_compra", "preco"], metrics.custoUnitario);
+  metrics.custoUnitario = firstNumber(data, UNIT_COST_KEYS, metrics.custoUnitario);
 }
 
 function applyCalculations(metricsList) {
+  for (const item of metricsList) {
+    if (item.totalVendido <= 0 && item.quantidadeVendida > 0 && item.custoUnitario > 0) {
+      item.totalVendido = item.quantidadeVendida * item.custoUnitario;
+    }
+  }
+
   const totalVendasGeral = sum(metricsList, (item) => item.totalVendido);
   const sortedBySales = [...metricsList].sort((a, b) => b.totalVendido - a.totalVendido);
   let acumulado = 0;
@@ -808,7 +879,25 @@ class BatchWriter {
 }
 
 function normalizeId(data, fallback) {
-  return firstString(data, ["produto_id", "id", "sku", "codigo"], fallback);
+  return normalizeProductId(firstString(data, PRODUCT_ID_KEYS, fallback));
+}
+
+function normalizeProductId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  let text = String(value).trim();
+
+  if (text.endsWith(".0")) {
+    text = text.slice(0, -2);
+  }
+
+  if (/^0+\d+$/.test(text)) {
+    text = text.replace(/^0+/, "") || "0";
+  }
+
+  return text;
 }
 
 function firstString(data, keys, fallback = "") {
