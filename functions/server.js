@@ -439,8 +439,11 @@ async function rebuildAnalytics(empresaId = null) {
       empresa_id: empresaId || null,
       metodologia_indicadores: "NIQ OSA: disponibilidade, risco de ruptura, impacto em vendas e acao por SKU",
       meta_disponibilidade_prateleira: NIQ_AVAILABILITY_TARGET,
+      meta_disponibilidade_prateleira_formatada: formatPercent(NIQ_AVAILABILITY_TARGET),
       disponibilidade_prateleira: round(disponibilidadePrateleira),
+      disponibilidade_prateleira_formatada: formatPercent(disponibilidadePrateleira),
       taxa_ruptura: round(taxaRuptura),
+      taxa_ruptura_formatada: formatPercent(taxaRuptura),
       cobertura_media_dias: round(coberturaMediaDias),
       giro_medio: round(giroMedio),
       itens_criticos: itensCriticos,
@@ -448,6 +451,7 @@ async function rebuildAnalytics(empresaId = null) {
       venda_perdida_estimada: round(vendaPerdidaEstimada),
       venda_perdida_estimada_formatada: formatCurrency(vendaPerdidaEstimada),
       oportunidade_receita_percentual: round(oportunidadeReceitaPercentual),
+      oportunidade_receita_percentual_formatada: formatPercent(oportunidadeReceitaPercentual),
       investimento_sugerido: round(investimentoSugerido),
       investimento_sugerido_formatado: formatCurrency(investimentoSugerido),
       total_vendas: round(totalVendas),
@@ -865,8 +869,11 @@ function toRankingDoc(item) {
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
     percentual_vendas: round(item.percentualVendas),
+    percentual_vendas_formatado: formatPercent(item.percentualVendas),
     percentual_acumulado: round(item.percentualAcumulado),
+    percentual_acumulado_formatado: formatPercent(item.percentualAcumulado),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
     status_niq: item.statusNiq,
@@ -885,8 +892,11 @@ function toCurvaAbcDoc(item) {
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
     percentual_vendas: round(item.percentualVendas),
+    percentual_vendas_formatado: formatPercent(item.percentualVendas),
     percentual_acumulado: round(item.percentualAcumulado),
+    percentual_acumulado_formatado: formatPercent(item.percentualAcumulado),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
     status_niq: item.statusNiq,
@@ -905,7 +915,9 @@ function toRupturaDoc(item) {
     media_venda_dia: round(item.mediaVendaDia),
     dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     taxa_ruptura_sku: round(item.taxaRupturaSku),
+    taxa_ruptura_sku_formatada: formatPercent(item.taxaRupturaSku),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
     status_niq: item.statusNiq,
@@ -934,6 +946,7 @@ function toSugestaoCompraDoc(item) {
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     status_niq: item.statusNiq,
     acao_recomendada: item.acaoRecomendada,
     prioridade: item.prioridade,
@@ -951,6 +964,7 @@ function toProdutoMortoDoc(item) {
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     status_niq: item.statusNiq,
     acao_recomendada: item.acaoRecomendada,
     prioridade: item.estoqueAtual > 20 ? "alta" : "media",
@@ -1095,6 +1109,13 @@ function formatCurrency(value) {
     style: "currency",
     currency: "BRL",
   }).format(value);
+}
+
+function formatPercent(value) {
+  return `${round(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}%`;
 }
 
 const port = Number(process.env.PORT || 3000);
