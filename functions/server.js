@@ -16,6 +16,7 @@ const WINDOW_DAYS = 30;
 const DEFAULT_COVERAGE_TARGET_DAYS = 30;
 const DEFAULT_SAFETY_DAYS = 7;
 const DEAD_STOCK_MIN_UNITS = 1;
+const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
 
 initializeFirebase();
 
@@ -31,6 +32,10 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.json({ok: true, status: "online"});
+});
+
+app.get("/debug-storage", requireApiKey, async (req, res) => {
+  await handleDebugStorage(req, res);
 });
 
 app.get("/run-analytics", requireApiKey, async (req, res) => {
@@ -102,8 +107,31 @@ async function handleImportStorageCsv(req, res, shouldRunAnalytics) {
   }
 }
 
+async function handleDebugStorage(req, res) {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    const bucket = getStorageBucket();
+    const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
+    const [files] = await bucket.getFiles({prefix});
+
+    res.json({
+      ok: true,
+      bucket: bucket.name,
+      prefix,
+      total: files.length,
+      files: files.map((file) => file.name),
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Erro desconhecido",
+    });
+  }
+}
+
 async function processarUploadsPendentes(empresaId = null) {
-  const bucket = admin.storage().bucket();
+  const bucket = getStorageBucket();
   const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
   const [files] = await bucket.getFiles({prefix});
   const resultados = [];
@@ -382,22 +410,55 @@ function initializeFirebase() {
 
   if (serviceAccountBase64) {
     const json = Buffer.from(serviceAccountBase64, "base64").toString("utf8");
+    const serviceAccount = JSON.parse(json);
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(json)),
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: getStorageBucketName(serviceAccount.project_id),
     });
     return;
   }
 
   if (serviceAccountJson) {
+    const serviceAccount = JSON.parse(serviceAccountJson);
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: getStorageBucketName(serviceAccount.project_id),
     });
     return;
   }
 
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
+    storageBucket: getStorageBucketName(),
   });
+}
+
+function getStorageBucketName(projectId = null) {
+  const explicitBucket = process.env.FIREBASE_STORAGE_BUCKET;
+  if (explicitBucket) {
+    return explicitBucket.trim();
+  }
+
+  if (admin.apps.length > 0 && admin.app().options.storageBucket) {
+    return admin.app().options.storageBucket;
+  }
+
+  if (projectId) {
+    return `${projectId}.firebasestorage.app`;
+  }
+
+  return DEFAULT_STORAGE_BUCKET;
+}
+
+function getStorageBucket() {
+  const bucketName = getStorageBucketName();
+  if (!bucketName) {
+    throw new Error(
+      "Bucket do Firebase Storage nao configurado. Defina FIREBASE_STORAGE_BUCKET no Render.",
+    );
+  }
+
+  return admin.storage().bucket(bucketName);
 }
 
 function requireApiKey(req, res, next) {
