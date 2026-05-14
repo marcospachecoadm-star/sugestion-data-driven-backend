@@ -827,6 +827,7 @@ function toSugestaoCompraDoc(item) {
     quantidade_vendida: round(item.quantidadeVendida),
     quantidade_sugerida: round(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
+    investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
     prioridade: item.prioridade,
   };
 }
