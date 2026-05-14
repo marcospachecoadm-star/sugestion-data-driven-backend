@@ -16,6 +16,7 @@ const WINDOW_DAYS = 30;
 const DEFAULT_COVERAGE_TARGET_DAYS = 30;
 const DEFAULT_SAFETY_DAYS = 7;
 const DEAD_STOCK_MIN_UNITS = 1;
+const NIQ_AVAILABILITY_TARGET = 97;
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
 const PRODUCT_ID_KEYS = ["produto_id", "id", "sku", "codigo", "cod_produto"];
 const STOCK_QUANTITY_KEYS = [
@@ -412,16 +413,41 @@ async function rebuildAnalytics(empresaId = null) {
 
   const totalVendas = sum(metricsList, (item) => item.totalVendido);
   const investimentoSugerido = sum(sugestoes, (item) => item.investimentoSugerido);
+  const vendaPerdidaEstimada = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const giroMedio = average(metricsList, (item) => item.mediaVendaDia);
+  const coberturaMediaDias = average(
+    metricsList.filter((item) => item.diasCobertura !== null),
+    (item) => item.diasCobertura,
+  );
+  const produtosAtivos = metricsList.filter((item) => item.quantidadeVendida > 0).length;
+  const produtosDisponiveis = metricsList.filter(
+    (item) => item.quantidadeVendida > 0 && item.estoqueAtual > 0,
+  ).length;
+  const produtosRuptura = metricsList.filter(
+    (item) => item.quantidadeVendida > 0 && item.estoqueAtual <= 0,
+  ).length;
+  const disponibilidadePrateleira = produtosAtivos > 0 ? (produtosDisponiveis / produtosAtivos) * 100 : 100;
+  const taxaRuptura = produtosAtivos > 0 ? (produtosRuptura / produtosAtivos) * 100 : 0;
+  const oportunidadeReceitaPercentual = (totalVendas + vendaPerdidaEstimada) > 0 ?
+    (vendaPerdidaEstimada / (totalVendas + vendaPerdidaEstimada)) * 100 :
+    0;
   const itensCriticos = metricsList.filter((item) => item.risco === "alto").length;
 
   const dashboardDocId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
   await db.doc(`insights/${dashboardDocId}`).set(
     {
       empresa_id: empresaId || null,
+      metodologia_indicadores: "NIQ OSA: disponibilidade, risco de ruptura, impacto em vendas e acao por SKU",
+      meta_disponibilidade_prateleira: NIQ_AVAILABILITY_TARGET,
+      disponibilidade_prateleira: round(disponibilidadePrateleira),
+      taxa_ruptura: round(taxaRuptura),
+      cobertura_media_dias: round(coberturaMediaDias),
       giro_medio: round(giroMedio),
       itens_criticos: itensCriticos,
       alertas_pendentes: alertas.length,
+      venda_perdida_estimada: round(vendaPerdidaEstimada),
+      venda_perdida_estimada_formatada: formatCurrency(vendaPerdidaEstimada),
+      oportunidade_receita_percentual: round(oportunidadeReceitaPercentual),
       investimento_sugerido: round(investimentoSugerido),
       investimento_sugerido_formatado: formatCurrency(investimentoSugerido),
       total_vendas: round(totalVendas),
@@ -442,6 +468,9 @@ async function rebuildAnalytics(empresaId = null) {
     produtosMortos: produtosMortos.length,
     rankingVendas: metricsList.length,
     totalVendas: round(totalVendas),
+    vendaPerdidaEstimada: round(vendaPerdidaEstimada),
+    disponibilidadePrateleira: round(disponibilidadePrateleira),
+    taxaRuptura: round(taxaRuptura),
     investimentoSugerido: round(investimentoSugerido),
   };
 }
@@ -615,6 +644,12 @@ function createEmptyMetrics(produtoId, data) {
     quantidadeVendida: firstNumber(data, SALES_QUANTITY_KEYS, 0),
     totalVendido: firstNumber(data, SALES_TOTAL_KEYS, 0),
     custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
+    valorUnitarioMedio: 0,
+    vendaPerdidaEstimada: 0,
+    disponibilidadePrateleira: 100,
+    taxaRupturaSku: 0,
+    statusNiq: "sem_giro",
+    acaoRecomendada: "monitorar",
     mediaVendaDia: 0,
     diasCobertura: null,
     risco: "baixo",
@@ -676,7 +711,48 @@ function applyCalculations(metricsList) {
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
     item.risco = calculateRisk(item);
     item.prioridade = calculatePriority(item);
+    applyNiqIndicators(item);
   }
+}
+
+function applyNiqIndicators(item) {
+  item.valorUnitarioMedio = item.quantidadeVendida > 0 ?
+    item.totalVendido / item.quantidadeVendida :
+    item.custoUnitario;
+  item.disponibilidadePrateleira = item.estoqueAtual > 0 ? 100 : 0;
+  item.taxaRupturaSku = item.quantidadeVendida > 0 && item.estoqueAtual <= 0 ? 100 : 0;
+
+  if (item.mediaVendaDia <= 0) {
+    item.statusNiq = item.estoqueAtual > 0 ? "sem_giro_com_estoque" : "sem_giro";
+    item.acaoRecomendada = item.estoqueAtual > 0 ? "avaliar_sortimento" : "monitorar";
+    item.vendaPerdidaEstimada = 0;
+    return;
+  }
+
+  const diasCobertura = item.diasCobertura === null ? 0 : item.diasCobertura;
+  const diasEmRisco = Math.max(0, item.diasSeguranca - diasCobertura);
+  item.vendaPerdidaEstimada = diasEmRisco * item.mediaVendaDia * item.valorUnitarioMedio;
+
+  if (item.estoqueAtual <= 0) {
+    item.statusNiq = "ruptura";
+    item.acaoRecomendada = "repor_urgente";
+    return;
+  }
+
+  if (item.risco === "alto") {
+    item.statusNiq = "risco_ruptura";
+    item.acaoRecomendada = "antecipar_reposicao";
+    return;
+  }
+
+  if (item.diasCobertura !== null && item.diasCobertura > item.diasCoberturaAlvo * 2) {
+    item.statusNiq = "excesso_estoque";
+    item.acaoRecomendada = "reduzir_compra_ou_promocionar";
+    return;
+  }
+
+  item.statusNiq = "saudavel";
+  item.acaoRecomendada = "manter";
 }
 
 function calculateRisk(item) {
@@ -722,6 +798,10 @@ function buildAlerts(metricsList) {
         prioridade: "alta",
         estoque_atual: round(item.estoqueAtual),
         dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
+        venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+        venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+        status_niq: item.statusNiq,
+        acao_recomendada: item.acaoRecomendada,
         status: "pendente",
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -738,6 +818,10 @@ function buildAlerts(metricsList) {
         prioridade: "media",
         estoque_atual: round(item.estoqueAtual),
         dias_cobertura: round(item.diasCobertura),
+        venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+        venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+        status_niq: item.statusNiq,
+        acao_recomendada: item.acaoRecomendada,
         status: "pendente",
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -780,6 +864,13 @@ function toRankingDoc(item) {
     quantidade_vendida: round(item.quantidadeVendida),
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
+    percentual_vendas: round(item.percentualVendas),
+    percentual_acumulado: round(item.percentualAcumulado),
+    disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    status_niq: item.statusNiq,
+    acao_recomendada: item.acaoRecomendada,
     ranking: item.ranking,
     classe: item.abcClass,
   };
@@ -792,8 +883,14 @@ function toCurvaAbcDoc(item) {
     produto_nome: item.produtoNome,
     categoria: item.categoria,
     total_vendido: round(item.totalVendido),
+    total_vendido_formatado: formatCurrency(item.totalVendido),
     percentual_vendas: round(item.percentualVendas),
     percentual_acumulado: round(item.percentualAcumulado),
+    disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    status_niq: item.statusNiq,
+    acao_recomendada: item.acaoRecomendada,
     classe: item.abcClass,
   };
 }
@@ -807,6 +904,12 @@ function toRupturaDoc(item) {
     estoque_atual: round(item.estoqueAtual),
     media_venda_dia: round(item.mediaVendaDia),
     dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
+    disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    taxa_ruptura_sku: round(item.taxaRupturaSku),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    status_niq: item.statusNiq,
+    acao_recomendada: item.acaoRecomendada,
     risco: item.risco,
     prioridade: item.prioridade,
   };
@@ -828,6 +931,11 @@ function toSugestaoCompraDoc(item) {
     quantidade_sugerida: round(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    status_niq: item.statusNiq,
+    acao_recomendada: item.acaoRecomendada,
     prioridade: item.prioridade,
   };
 }
@@ -841,6 +949,10 @@ function toProdutoMortoDoc(item) {
     estoque_atual: round(item.estoqueAtual),
     quantidade_vendida: round(item.quantidadeVendida),
     total_vendido: round(item.totalVendido),
+    total_vendido_formatado: formatCurrency(item.totalVendido),
+    disponibilidade_prateleira: round(item.disponibilidadePrateleira),
+    status_niq: item.statusNiq,
+    acao_recomendada: item.acaoRecomendada,
     prioridade: item.estoqueAtual > 20 ? "alta" : "media",
   };
 }
