@@ -1,4 +1,5 @@
 const express = require("express");
+const {handleAlertas} = require("../controllers/alertasController");
 const {handleResumoIndicadores} = require("../controllers/indicadoresController");
 const {handleRunAnalytics} = require("../controllers/analyticsController");
 const {handleProdutosMortos} = require("../controllers/produtosMortosController");
@@ -18,6 +19,7 @@ router.get("/", (_req, res) => {
     service: "SugestionDataDriven Backend",
     routes: [
       "/health",
+      "/alertas",
       "/ranking-vendas",
       "/produtos-mortos",
       "/indicadores/resumo",
@@ -34,6 +36,7 @@ router.get("/health", (_req, res) => {
 });
 
 router.get("/debug-storage", requireApiKey, handleDebugStorage);
+router.get("/alertas", requireApiKey, handleAlertas);
 router.get("/ranking-vendas", requireApiKey, handleRankingVendas);
 router.get("/produtos-mortos", requireApiKey, handleProdutosMortos);
 router.get("/indicadores/resumo", requireApiKey, handleResumoIndicadores);
