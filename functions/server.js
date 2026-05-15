@@ -410,7 +410,7 @@ async function rebuildAnalytics(empresaId = null) {
   applyCalculations(metricsList);
   const vendas7DiasGrafico = buildDailySalesSeriesFromMetrics(metricsList, 7);
 
-  const sugestoes = metricsList.filter((item) => item.quantidadeSugerida > 0);
+  const sugestoes = sortByBusinessPriority(metricsList.filter((item) => item.quantidadeSugerida > 0));
   const alertas = buildAlerts(metricsList);
   const produtosMortos = metricsList.filter(
     (item) => item.estoqueAtual >= DEAD_STOCK_MIN_UNITS && item.quantidadeVendida <= 0,
@@ -688,6 +688,7 @@ function createEmptyMetrics(produtoId, data) {
     diasCobertura: null,
     risco: "baixo",
     prioridade: "baixa",
+    prioridadeScore: 0,
     quantidadeSugerida: 0,
     estoqueAlvo: 0,
     estoqueDisponivelCompra: 0,
@@ -752,8 +753,9 @@ function applyCalculations(metricsList) {
     item.quantidadeSugerida = Math.max(0, Math.ceil(item.estoqueAlvo - item.estoqueDisponivelCompra));
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
     item.risco = calculateRisk(item);
-    item.prioridade = calculatePriority(item);
     applyNiqIndicators(item);
+    item.prioridadeScore = calculatePriorityScore(item);
+    item.prioridade = calculatePriority(item);
   }
 }
 
@@ -820,15 +822,49 @@ function calculateRisk(item) {
 }
 
 function calculatePriority(item) {
-  if (item.risco === "alto" || (item.abcClass === "A" && item.quantidadeSugerida > 0)) {
+  if (item.prioridadeScore >= 80) {
     return "alta";
   }
 
-  if (item.risco === "medio" || item.quantidadeSugerida > 0) {
+  if (item.prioridadeScore >= 45) {
     return "media";
   }
 
   return "baixa";
+}
+
+function calculatePriorityScore(item) {
+  let score = 0;
+
+  if (item.abcClass === "A") {
+    score += 45;
+  } else if (item.abcClass === "B") {
+    score += 25;
+  } else {
+    score += 10;
+  }
+
+  if (item.risco === "alto") {
+    score += 35;
+  } else if (item.risco === "medio") {
+    score += 20;
+  }
+
+  if (item.diasCobertura !== null) {
+    if (item.diasCobertura <= 0) {
+      score += 20;
+    } else if (item.diasCobertura <= NIQ_STOCKOUT_ALERT_DAYS) {
+      score += 15;
+    } else if (item.diasCobertura <= NIQ_STOCKOUT_WATCH_DAYS) {
+      score += 8;
+    }
+  }
+
+  if (item.vendaPerdidaEstimada > 0) {
+    score += Math.min(20, Math.log10(item.vendaPerdidaEstimada + 1) * 5);
+  }
+
+  return round(Math.min(100, score));
 }
 
 function buildAlerts(metricsList) {
@@ -844,7 +880,9 @@ function buildAlerts(metricsList) {
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
         categoria: item.categoria,
-        prioridade: "alta",
+        prioridade: item.prioridade,
+        prioridade_score: round(item.prioridadeScore),
+        curva_abc: item.abcClass,
         estoque_atual: round(item.estoqueAtual),
         dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
         ruptura_em_dias: getRupturaEmDias(item),
@@ -859,7 +897,23 @@ function buildAlerts(metricsList) {
     }
   }
 
-  return alerts;
+  return sortByBusinessPriority(alerts);
+}
+
+function sortByBusinessPriority(rows) {
+  return [...rows].sort((a, b) => {
+    const priorityDiff = (b.prioridade_score || 0) - (a.prioridade_score || 0);
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+
+    const lostSalesDiff = (b.venda_perdida_estimada || 0) - (a.venda_perdida_estimada || 0);
+    if (lostSalesDiff !== 0) {
+      return lostSalesDiff;
+    }
+
+    return (a.ruptura_em_dias || 999) - (b.ruptura_em_dias || 999);
+  });
 }
 
 function isNiqStockoutAlert(item) {
@@ -926,6 +980,8 @@ function toRankingDoc(item) {
     disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    prioridade_score: round(item.prioridadeScore),
+    curva_abc: item.abcClass,
     status_niq: item.statusNiq,
     acao_recomendada: item.acaoRecomendada,
     ranking: item.ranking,
@@ -949,6 +1005,8 @@ function toCurvaAbcDoc(item) {
     disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    prioridade_score: round(item.prioridadeScore),
+    curva_abc: item.abcClass,
     status_niq: item.statusNiq,
     acao_recomendada: item.acaoRecomendada,
     classe: item.abcClass,
@@ -1002,6 +1060,8 @@ function toSugestaoCompraDoc(item) {
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    prioridade_score: round(item.prioridadeScore),
+    curva_abc: item.abcClass,
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
     disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     status_niq: item.statusNiq,
