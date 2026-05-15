@@ -151,6 +151,35 @@ async function rebuildAnalytics(empresaId = null) {
   const itensCriticos = riscoAlto;
 
   const dashboardDocId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
+  const rupturaResumoDocId = empresaId ? `${safeDocId(empresaId)}_resumo` : "_resumo";
+  const resumoRuptura = {
+    tipo: "resumo",
+    empresa_id: empresaId || null,
+    total_itens: metricsList.length,
+    cobertura_media_dias: round(coberturaMediaDias),
+    media_cobertura: round(coberturaMediaDias),
+    cobertura_media_itens_com_venda: round(coberturaMediaItensComVenda),
+    media_cobertura_itens_com_venda: round(coberturaMediaItensComVenda),
+    itens_em_risco: itensEmRisco,
+    risco_alto: riscoAlto,
+    risco_medio: riscoMedio,
+    risco_baixo: riscoBaixo,
+    produtos_em_ruptura: produtosRuptura,
+    excesso_estoque: excessoEstoque,
+    disponibilidade_prateleira: round(disponibilidadePrateleira),
+    disponibilidade_prateleira_formatada: formatPercent(disponibilidadePrateleira),
+    taxa_ruptura: round(taxaRuptura),
+    taxa_ruptura_formatada: formatPercent(taxaRuptura),
+    venda_perdida_estimada: round(vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(vendaPerdidaEstimada),
+    atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await db
+    .collection("previsao_ruptura")
+    .doc(rupturaResumoDocId)
+    .set(resumoRuptura, {merge: true});
+
   await db.doc(`insights/${dashboardDocId}`).set(
     {
       empresa_id: empresaId || null,
