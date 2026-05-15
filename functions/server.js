@@ -349,6 +349,7 @@ async function rebuildAnalytics(empresaId = null) {
   cutoff.setDate(cutoff.getDate() - WINDOW_DAYS);
   const cutoff7Dias = new Date();
   cutoff7Dias.setDate(cutoff7Dias.getDate() - 7);
+  const vendas7DiasGrafico = createDailySalesSeries(7);
 
   const [productsSnap, stockSnap, salesSnap] = await Promise.all([
     getTenantCollection("produtos", empresaId),
@@ -389,12 +390,14 @@ async function rebuildAnalytics(empresaId = null) {
     const quantidadeVendida = firstNumber(data, SALES_QUANTITY_KEYS, 0);
     const totalVendido = firstNumber(data, SALES_TOTAL_KEYS, null);
     const precoUnitario = firstNumber(data, UNIT_PRICE_KEYS, 0);
+    const valorVenda = totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
 
     metrics.quantidadeVendida += quantidadeVendida;
-    metrics.totalVendido += totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
+    metrics.totalVendido += valorVenda;
     if (isWithinWindow(data, cutoff7Dias)) {
       metrics.quantidadeVendida7Dias += quantidadeVendida;
-      metrics.totalVendido7Dias += totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
+      metrics.totalVendido7Dias += valorVenda;
+      addSaleToDailySeries(vendas7DiasGrafico, getRecordDate(data), valorVenda);
     }
     mergeProductIdentity(metrics, data);
   }
@@ -465,6 +468,9 @@ async function rebuildAnalytics(empresaId = null) {
       total_vendas_formatado: formatCurrency(totalVendas),
       total_vendas_7_dias: round(totalVendas7Dias),
       total_vendas_7_dias_formatado: formatCurrency(totalVendas7Dias),
+      vendas_7_dias_grafico: formatDailySalesSeries(vendas7DiasGrafico),
+      vendas_7_dias_labels: vendas7DiasGrafico.map((item) => item.label),
+      vendas_7_dias_valores: vendas7DiasGrafico.map((item) => round(item.valor)),
       produtos_processados: metricsList.length,
       vendas_processadas: vendasProcessadas,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
@@ -482,6 +488,7 @@ async function rebuildAnalytics(empresaId = null) {
     rankingVendas: metricsList.length,
     totalVendas: round(totalVendas),
     totalVendas7Dias: round(totalVendas7Dias),
+    vendas7DiasGrafico: formatDailySalesSeries(vendas7DiasGrafico),
     vendaPerdidaEstimada: round(vendaPerdidaEstimada),
     disponibilidadePrateleira: round(disponibilidadePrateleira),
     taxaRuptura: round(taxaRuptura),
@@ -1086,9 +1093,14 @@ function asNumber(value) {
 }
 
 function isWithinWindow(data, cutoff) {
+  const date = getRecordDate(data);
+  return date ? date >= cutoff : true;
+}
+
+function getRecordDate(data) {
   const rawDate = data.data || data.data_venda || data.criado_em || data.created_at;
   if (!rawDate) {
-    return true;
+    return null;
   }
 
   let date = null;
@@ -1100,7 +1112,59 @@ function isWithinWindow(data, cutoff) {
     date = Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
-  return date ? date >= cutoff : true;
+  return date;
+}
+
+function createDailySalesSeries(days) {
+  const series = [];
+
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - index);
+    series.push({
+      data: formatDateKey(date),
+      label: formatWeekdayLabel(date),
+      valor: 0,
+    });
+  }
+
+  return series;
+}
+
+function addSaleToDailySeries(series, date, value) {
+  const saleDate = date || new Date();
+  const key = formatDateKey(saleDate);
+  const item = series.find((entry) => entry.data === key);
+
+  if (item) {
+    item.valor += value;
+  }
+}
+
+function formatDailySalesSeries(series) {
+  return series.map((item) => ({
+    data: item.data,
+    label: item.label,
+    valor: round(item.valor),
+    valor_formatado: formatCurrency(item.valor),
+  }));
+}
+
+function formatDateKey(date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function formatWeekdayLabel(date) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+  }).format(date).replace(".", "").slice(0, 1).toUpperCase();
 }
 
 function safeDocId(value) {
