@@ -13,7 +13,7 @@ async function buscarProdutosMortos(params = {}) {
 
   const limit = normalizeLimit(params.limit);
   const snap = await getDb()
-    .collection("produtos_mortos")
+    .collection(params.collectionName || "mortos")
     .where("empresa_id", "==", empresaId)
     .limit(limit)
     .get();

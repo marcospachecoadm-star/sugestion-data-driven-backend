@@ -115,6 +115,7 @@ async function rebuildAnalytics(empresaId = null) {
     replaceCollection("previsao_ruptura", metricsList, toRupturaDoc, empresaId),
     replaceCollection("sugestoes_compra", sugestoes, toSugestaoCompraDoc, empresaId),
     replaceCollection("produtos_mortos", produtosMortos, toProdutoMortoDoc, empresaId),
+    replaceCollection("mortos", produtosMortos, toProdutoMortoDoc, empresaId),
     replaceCollection("alertas", alertas, (alerta) => alerta, empresaId),
   ]);
 
