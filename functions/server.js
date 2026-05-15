@@ -347,6 +347,8 @@ async function salvarLinhasNoFirestore(nomeColecao, linhas) {
 async function rebuildAnalytics(empresaId = null) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - WINDOW_DAYS);
+  const cutoff7Dias = new Date();
+  cutoff7Dias.setDate(cutoff7Dias.getDate() - 7);
 
   const [productsSnap, stockSnap, salesSnap] = await Promise.all([
     getTenantCollection("produtos", empresaId),
@@ -390,6 +392,10 @@ async function rebuildAnalytics(empresaId = null) {
 
     metrics.quantidadeVendida += quantidadeVendida;
     metrics.totalVendido += totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
+    if (isWithinWindow(data, cutoff7Dias)) {
+      metrics.quantidadeVendida7Dias += quantidadeVendida;
+      metrics.totalVendido7Dias += totalVendido !== null ? totalVendido : quantidadeVendida * precoUnitario;
+    }
     mergeProductIdentity(metrics, data);
   }
 
@@ -412,6 +418,7 @@ async function rebuildAnalytics(empresaId = null) {
   ]);
 
   const totalVendas = sum(metricsList, (item) => item.totalVendido);
+  const totalVendas7Dias = sum(metricsList, (item) => item.totalVendido7Dias);
   const investimentoSugerido = sum(sugestoes, (item) => item.investimentoSugerido);
   const vendaPerdidaEstimada = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const giroMedio = average(metricsList, (item) => item.mediaVendaDia);
@@ -456,6 +463,8 @@ async function rebuildAnalytics(empresaId = null) {
       investimento_sugerido_formatado: formatCurrency(investimentoSugerido),
       total_vendas: round(totalVendas),
       total_vendas_formatado: formatCurrency(totalVendas),
+      total_vendas_7_dias: round(totalVendas7Dias),
+      total_vendas_7_dias_formatado: formatCurrency(totalVendas7Dias),
       produtos_processados: metricsList.length,
       vendas_processadas: vendasProcessadas,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
@@ -472,6 +481,7 @@ async function rebuildAnalytics(empresaId = null) {
     produtosMortos: produtosMortos.length,
     rankingVendas: metricsList.length,
     totalVendas: round(totalVendas),
+    totalVendas7Dias: round(totalVendas7Dias),
     vendaPerdidaEstimada: round(vendaPerdidaEstimada),
     disponibilidadePrateleira: round(disponibilidadePrateleira),
     taxaRuptura: round(taxaRuptura),
@@ -647,6 +657,8 @@ function createEmptyMetrics(produtoId, data) {
     diasSeguranca: firstNumber(data, ["dias_seguranca"], DEFAULT_SAFETY_DAYS),
     quantidadeVendida: firstNumber(data, SALES_QUANTITY_KEYS, 0),
     totalVendido: firstNumber(data, SALES_TOTAL_KEYS, 0),
+    quantidadeVendida7Dias: 0,
+    totalVendido7Dias: 0,
     custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
     valorUnitarioMedio: 0,
     vendaPerdidaEstimada: 0,
@@ -688,6 +700,10 @@ function applyCalculations(metricsList) {
   for (const item of metricsList) {
     if (item.totalVendido <= 0 && item.quantidadeVendida > 0 && item.custoUnitario > 0) {
       item.totalVendido = item.quantidadeVendida * item.custoUnitario;
+    }
+
+    if (item.totalVendido7Dias <= 0 && item.quantidadeVendida7Dias > 0 && item.custoUnitario > 0) {
+      item.totalVendido7Dias = item.quantidadeVendida7Dias * item.custoUnitario;
     }
   }
 
@@ -866,8 +882,11 @@ function toRankingDoc(item) {
     produto_nome: item.produtoNome,
     categoria: item.categoria,
     quantidade_vendida: round(item.quantidadeVendida),
+    quantidade_vendida_7_dias: round(item.quantidadeVendida7Dias),
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
+    total_vendido_7_dias: round(item.totalVendido7Dias),
+    total_vendido_7_dias_formatado: formatCurrency(item.totalVendido7Dias),
     percentual_vendas: round(item.percentualVendas),
     percentual_vendas_formatado: formatPercent(item.percentualVendas),
     percentual_acumulado: round(item.percentualAcumulado),
