@@ -127,6 +127,10 @@ async function rebuildAnalytics(empresaId = null) {
     metricsList.filter((item) => item.diasCobertura !== null),
     (item) => item.diasCobertura,
   );
+  const coberturaMediaItensComVenda = average(
+    metricsList.filter((item) => item.quantidadeVendida > 0 && item.diasCobertura !== null),
+    (item) => item.diasCobertura,
+  );
   const produtosAtivos = metricsList.filter((item) => item.quantidadeVendida > 0).length;
   const produtosDisponiveis = metricsList.filter(
     (item) => item.quantidadeVendida > 0 && item.estoqueAtual > 0,
@@ -134,12 +138,17 @@ async function rebuildAnalytics(empresaId = null) {
   const produtosRuptura = metricsList.filter(
     (item) => item.quantidadeVendida > 0 && item.estoqueAtual <= 0,
   ).length;
+  const riscoAlto = metricsList.filter((item) => item.risco === "alto").length;
+  const riscoMedio = metricsList.filter((item) => item.risco === "medio").length;
+  const riscoBaixo = metricsList.filter((item) => item.risco === "baixo").length;
+  const itensEmRisco = riscoAlto + riscoMedio;
+  const excessoEstoque = metricsList.filter((item) => item.statusNiq === "excesso_estoque").length;
   const disponibilidadePrateleira = produtosAtivos > 0 ? (produtosDisponiveis / produtosAtivos) * 100 : 100;
   const taxaRuptura = produtosAtivos > 0 ? (produtosRuptura / produtosAtivos) * 100 : 0;
   const oportunidadeReceitaPercentual = (totalVendas + vendaPerdidaEstimada) > 0 ?
     (vendaPerdidaEstimada / (totalVendas + vendaPerdidaEstimada)) * 100 :
     0;
-  const itensCriticos = metricsList.filter((item) => item.risco === "alto").length;
+  const itensCriticos = riscoAlto;
 
   const dashboardDocId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
   await db.doc(`insights/${dashboardDocId}`).set(
@@ -153,8 +162,15 @@ async function rebuildAnalytics(empresaId = null) {
       taxa_ruptura: round(taxaRuptura),
       taxa_ruptura_formatada: formatPercent(taxaRuptura),
       cobertura_media_dias: round(coberturaMediaDias),
+      cobertura_media_itens_com_venda: round(coberturaMediaItensComVenda),
       giro_medio: round(giroMedio),
       itens_criticos: itensCriticos,
+      itens_em_risco: itensEmRisco,
+      risco_alto: riscoAlto,
+      risco_medio: riscoMedio,
+      risco_baixo: riscoBaixo,
+      produtos_em_ruptura: produtosRuptura,
+      excesso_estoque: excessoEstoque,
       alertas_pendentes: alertas.length,
       venda_perdida_estimada: round(vendaPerdidaEstimada),
       venda_perdida_estimada_formatada: formatCurrency(vendaPerdidaEstimada),
@@ -186,6 +202,14 @@ async function rebuildAnalytics(empresaId = null) {
     vendaPerdidaEstimada: round(vendaPerdidaEstimada),
     disponibilidadePrateleira: round(disponibilidadePrateleira),
     taxaRuptura: round(taxaRuptura),
+    coberturaMediaDias: round(coberturaMediaDias),
+    coberturaMediaItensComVenda: round(coberturaMediaItensComVenda),
+    itensEmRisco,
+    riscoAlto,
+    riscoMedio,
+    riscoBaixo,
+    produtosRuptura,
+    excessoEstoque,
     investimentoSugerido: round(investimentoSugerido),
   };
 }
