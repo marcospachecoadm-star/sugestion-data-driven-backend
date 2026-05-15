@@ -17,6 +17,8 @@ const DEFAULT_COVERAGE_TARGET_DAYS = 30;
 const DEFAULT_SAFETY_DAYS = 7;
 const DEAD_STOCK_MIN_UNITS = 1;
 const NIQ_AVAILABILITY_TARGET = 97;
+const NIQ_STOCKOUT_ALERT_DAYS = Number(process.env.NIQ_STOCKOUT_ALERT_DAYS || DEFAULT_SAFETY_DAYS);
+const NIQ_STOCKOUT_WATCH_DAYS = Number(process.env.NIQ_STOCKOUT_WATCH_DAYS || DEFAULT_SAFETY_DAYS * 2);
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
 const PRODUCT_ID_KEYS = ["produto_id", "id", "sku", "codigo", "cod_produto"];
 const STOCK_QUANTITY_KEYS = [
@@ -766,7 +768,7 @@ function applyNiqIndicators(item) {
   }
 
   const diasCobertura = item.diasCobertura === null ? 0 : item.diasCobertura;
-  const diasEmRisco = Math.max(0, item.diasSeguranca - diasCobertura);
+  const diasEmRisco = Math.max(0, NIQ_STOCKOUT_ALERT_DAYS - diasCobertura);
   item.vendaPerdidaEstimada = diasEmRisco * item.mediaVendaDia * item.valorUnitarioMedio;
 
   if (item.estoqueAtual <= 0) {
@@ -775,9 +777,15 @@ function applyNiqIndicators(item) {
     return;
   }
 
-  if (item.risco === "alto") {
+  if (isNiqStockoutAlert(item)) {
     item.statusNiq = "risco_ruptura";
     item.acaoRecomendada = "antecipar_reposicao";
+    return;
+  }
+
+  if (isNiqStockoutWatch(item)) {
+    item.statusNiq = "atencao_ruptura";
+    item.acaoRecomendada = "acompanhar_reposicao";
     return;
   }
 
@@ -796,11 +804,11 @@ function calculateRisk(item) {
     return "baixo";
   }
 
-  if (item.diasCobertura !== null && item.diasCobertura <= item.diasSeguranca) {
+  if (item.estoqueAtual <= 0 || isNiqStockoutAlert(item)) {
     return "alto";
   }
 
-  if (item.diasCobertura !== null && item.diasCobertura <= item.diasSeguranca * 2) {
+  if (isNiqStockoutWatch(item)) {
     return "medio";
   }
 
@@ -823,11 +831,12 @@ function buildAlerts(metricsList) {
   const alerts = [];
 
   for (const item of metricsList) {
-    if (item.risco === "alto") {
+    if (isNiqStockoutAlert(item)) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_ruptura`,
         empresa_id: item.empresaId || null,
         tipo: "ruptura",
+        criterio_alerta: getNiqStockoutCriteria(item),
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
         categoria: item.categoria,
@@ -844,31 +853,29 @@ function buildAlerts(metricsList) {
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
-
-    if (item.mediaVendaDia > 0 && item.diasCobertura !== null && item.diasCobertura > item.diasCoberturaAlvo * 2) {
-      alerts.push({
-        id: `${safeDocId(item.produtoId)}_excesso`,
-        empresa_id: item.empresaId || null,
-        tipo: "excesso_estoque",
-        produto_id: item.produtoId,
-        produto_nome: item.produtoNome,
-        categoria: item.categoria,
-        prioridade: "media",
-        estoque_atual: round(item.estoqueAtual),
-        dias_cobertura: round(item.diasCobertura),
-        ruptura_em_dias: getRupturaEmDias(item),
-        mensagem_ruptura: getMensagemRuptura(item),
-        venda_perdida_estimada: round(item.vendaPerdidaEstimada),
-        venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
-        status_niq: item.statusNiq,
-        acao_recomendada: item.acaoRecomendada,
-        status: "pendente",
-        criado_em: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
   }
 
   return alerts;
+}
+
+function isNiqStockoutAlert(item) {
+  return item.mediaVendaDia > 0 &&
+    item.diasCobertura !== null &&
+    item.diasCobertura <= NIQ_STOCKOUT_ALERT_DAYS;
+}
+
+function isNiqStockoutWatch(item) {
+  return item.mediaVendaDia > 0 &&
+    item.diasCobertura !== null &&
+    item.diasCobertura <= NIQ_STOCKOUT_WATCH_DAYS;
+}
+
+function getNiqStockoutCriteria(item) {
+  return [
+    "giro_recente_maior_que_zero",
+    `dias_cobertura_menor_ou_igual_${NIQ_STOCKOUT_ALERT_DAYS}`,
+    "impacto_estimado_em_venda_perdida",
+  ].join(" + ");
 }
 
 async function replaceCollection(collectionName, rows, mapper, empresaId = null) {
