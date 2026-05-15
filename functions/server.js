@@ -689,6 +689,8 @@ function createEmptyMetrics(produtoId, data) {
     risco: "baixo",
     prioridade: "baixa",
     quantidadeSugerida: 0,
+    estoqueAlvo: 0,
+    estoqueDisponivelCompra: 0,
     investimentoSugerido: 0,
     abcClass: "C",
     ranking: 0,
@@ -745,7 +747,9 @@ function applyCalculations(metricsList) {
       item.estoqueDesejado :
       item.mediaVendaDia * (item.diasCoberturaAlvo + item.diasSeguranca);
 
-    item.quantidadeSugerida = Math.max(0, Math.ceil(alvoEstoque - item.estoqueAtual));
+    item.estoqueAlvo = Math.ceil(alvoEstoque);
+    item.estoqueDisponivelCompra = Math.max(0, item.estoqueAtual);
+    item.quantidadeSugerida = Math.max(0, Math.ceil(item.estoqueAlvo - item.estoqueDisponivelCompra));
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
     item.risco = calculateRisk(item);
     item.prioridade = calculatePriority(item);
@@ -982,7 +986,9 @@ function toSugestaoCompraDoc(item) {
     produto_nome: item.produtoNome,
     categoria: item.categoria,
     estoque_atual: round(item.estoqueAtual),
-    estoque_desejado: round(item.estoqueDesejado),
+    estoque_alvo: round(item.estoqueAlvo),
+    estoque_desejado: round(item.estoqueAlvo),
+    estoque_disponivel_compra: round(item.estoqueDisponivelCompra),
     media_venda_dia: round(item.mediaVendaDia),
     dias_cobertura_alvo: round(item.diasCoberturaAlvo),
     dias_seguranca: round(item.diasSeguranca),
@@ -991,6 +997,7 @@ function toSugestaoCompraDoc(item) {
     mensagem_ruptura: getMensagemRuptura(item),
     quantidade_vendida: round(item.quantidadeVendida),
     quantidade_sugerida: round(item.quantidadeSugerida),
+    sugerido: round(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
