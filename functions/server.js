@@ -349,7 +349,6 @@ async function rebuildAnalytics(empresaId = null) {
   cutoff.setDate(cutoff.getDate() - WINDOW_DAYS);
   const cutoff7Dias = new Date();
   cutoff7Dias.setDate(cutoff7Dias.getDate() - 7);
-  const vendas7DiasGrafico = createDailySalesSeries(7);
 
   const [productsSnap, stockSnap, salesSnap] = await Promise.all([
     getTenantCollection("produtos", empresaId),
@@ -395,15 +394,19 @@ async function rebuildAnalytics(empresaId = null) {
     metrics.quantidadeVendida += quantidadeVendida;
     metrics.totalVendido += valorVenda;
     if (isWithinWindow(data, cutoff7Dias)) {
+      const dataVenda = formatDateKey(getRecordDate(data) || new Date());
       metrics.quantidadeVendida7Dias += quantidadeVendida;
       metrics.totalVendido7Dias += valorVenda;
-      addSaleToDailySeries(vendas7DiasGrafico, getRecordDate(data), valorVenda);
+      metrics.vendas7DiasPorData[dataVenda] = metrics.vendas7DiasPorData[dataVenda] || {quantidade: 0, valor: 0};
+      metrics.vendas7DiasPorData[dataVenda].quantidade += quantidadeVendida;
+      metrics.vendas7DiasPorData[dataVenda].valor += valorVenda;
     }
     mergeProductIdentity(metrics, data);
   }
 
   const metricsList = Array.from(metricsByProduct.values());
   applyCalculations(metricsList);
+  const vendas7DiasGrafico = buildDailySalesSeriesFromMetrics(metricsList, 7);
 
   const sugestoes = metricsList.filter((item) => item.quantidadeSugerida > 0);
   const alertas = buildAlerts(metricsList);
@@ -666,6 +669,7 @@ function createEmptyMetrics(produtoId, data) {
     totalVendido: firstNumber(data, SALES_TOTAL_KEYS, 0),
     quantidadeVendida7Dias: 0,
     totalVendido7Dias: 0,
+    vendas7DiasPorData: {},
     custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
     valorUnitarioMedio: 0,
     vendaPerdidaEstimada: 0,
@@ -1132,14 +1136,24 @@ function createDailySalesSeries(days) {
   return series;
 }
 
-function addSaleToDailySeries(series, date, value) {
-  const saleDate = date || new Date();
-  const key = formatDateKey(saleDate);
-  const item = series.find((entry) => entry.data === key);
+function buildDailySalesSeriesFromMetrics(metricsList, days) {
+  const series = createDailySalesSeries(days);
 
-  if (item) {
-    item.valor += value;
+  for (const metric of metricsList) {
+    for (const [data, venda] of Object.entries(metric.vendas7DiasPorData)) {
+      const item = series.find((entry) => entry.data === data);
+      if (!item) {
+        continue;
+      }
+
+      const valor = venda.valor > 0 ?
+        venda.valor :
+        venda.quantidade * metric.valorUnitarioMedio;
+      item.valor += valor;
+    }
   }
+
+  return series;
 }
 
 function formatDailySalesSeries(series) {
