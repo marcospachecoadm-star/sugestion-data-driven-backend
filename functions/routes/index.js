@@ -1,6 +1,7 @@
 const express = require("express");
 const {handleRunAnalytics} = require("../controllers/analyticsController");
 const {handleRankingVendas} = require("../controllers/rankingController");
+const {handleResumoPrevisaoRuptura} = require("../controllers/rupturaController");
 const {
   handleDebugStorage,
   handleImportStorageCsv,
@@ -13,7 +14,14 @@ router.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "SugestionDataDriven Backend",
-    routes: ["/health", "/ranking-vendas", "/import-storage-csv", "/import-and-run", "/run-analytics"],
+    routes: [
+      "/health",
+      "/ranking-vendas",
+      "/previsao-ruptura/resumo",
+      "/import-storage-csv",
+      "/import-and-run",
+      "/run-analytics",
+    ],
   });
 });
 
@@ -23,6 +31,7 @@ router.get("/health", (_req, res) => {
 
 router.get("/debug-storage", requireApiKey, handleDebugStorage);
 router.get("/ranking-vendas", requireApiKey, handleRankingVendas);
+router.get("/previsao-ruptura/resumo", requireApiKey, handleResumoPrevisaoRuptura);
 router.get("/run-analytics", requireApiKey, handleRunAnalytics);
 router.post("/run-analytics", requireApiKey, handleRunAnalytics);
 router.get("/import-storage-csv", requireApiKey, (req, res) => {
