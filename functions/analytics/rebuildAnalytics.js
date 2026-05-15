@@ -106,7 +106,11 @@ async function rebuildAnalytics(empresaId = null) {
   const sugestoes = metricsList.filter((item) => item.quantidadeSugerida > 0);
   const alertas = buildAlerts(metricsList);
   const produtosMortos = metricsList.filter(
-    (item) => item.estoqueAtual >= DEAD_STOCK_MIN_UNITS && item.quantidadeVendida <= 0,
+    (item) => {
+      return item.estoqueAtual >= DEAD_STOCK_MIN_UNITS &&
+        item.quantidadeVendida <= 0 &&
+        item.totalVendido <= 0;
+    },
   );
 
   await Promise.all([
@@ -180,6 +184,21 @@ async function rebuildAnalytics(empresaId = null) {
     .collection("previsao_ruptura")
     .doc(rupturaResumoDocId)
     .set(resumoRuptura, {merge: true});
+
+  const mortosResumoDocId = empresaId ? `${safeDocId(empresaId)}_resumo` : "_resumo";
+  const valorTotalParado = sum(produtosMortos, (item) => item.estoqueAtual * item.custoUnitario);
+  await db
+    .collection("mortos")
+    .doc(mortosResumoDocId)
+    .set({
+      tipo: "resumo",
+      empresa_id: empresaId || null,
+      total_itens: produtosMortos.length,
+      valor_total_parado: round(valorTotalParado),
+      valor_total_parado_formatado: formatCurrency(valorTotalParado),
+      media_dias_parados: produtosMortos.length > 0 ? 90 : 0,
+      atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
 
   await db.doc(`insights/${dashboardDocId}`).set(
     {
