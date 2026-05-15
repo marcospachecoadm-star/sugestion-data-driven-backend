@@ -834,6 +834,8 @@ function buildAlerts(metricsList) {
         prioridade: "alta",
         estoque_atual: round(item.estoqueAtual),
         dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
+        ruptura_em_dias: getRupturaEmDias(item),
+        mensagem_ruptura: getMensagemRuptura(item),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
         status_niq: item.statusNiq,
@@ -854,6 +856,8 @@ function buildAlerts(metricsList) {
         prioridade: "media",
         estoque_atual: round(item.estoqueAtual),
         dias_cobertura: round(item.diasCobertura),
+        ruptura_em_dias: getRupturaEmDias(item),
+        mensagem_ruptura: getMensagemRuptura(item),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
         status_niq: item.statusNiq,
@@ -949,6 +953,8 @@ function toRupturaDoc(item) {
     estoque_atual: round(item.estoqueAtual),
     media_venda_dia: round(item.mediaVendaDia),
     dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
+    ruptura_em_dias: getRupturaEmDias(item),
+    mensagem_ruptura: getMensagemRuptura(item),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
     disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     taxa_ruptura_sku: round(item.taxaRupturaSku),
@@ -974,6 +980,8 @@ function toSugestaoCompraDoc(item) {
     dias_cobertura_alvo: round(item.diasCoberturaAlvo),
     dias_seguranca: round(item.diasSeguranca),
     dias_cobertura: item.diasCobertura === null ? null : round(item.diasCobertura),
+    ruptura_em_dias: getRupturaEmDias(item),
+    mensagem_ruptura: getMensagemRuptura(item),
     quantidade_vendida: round(item.quantidadeVendida),
     quantidade_sugerida: round(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
@@ -1004,6 +1012,32 @@ function toProdutoMortoDoc(item) {
     acao_recomendada: item.acaoRecomendada,
     prioridade: item.estoqueAtual > 20 ? "alta" : "media",
   };
+}
+
+function getRupturaEmDias(item) {
+  if (item.mediaVendaDia <= 0 || item.diasCobertura === null) {
+    return null;
+  }
+
+  return Math.max(0, Math.ceil(item.diasCobertura));
+}
+
+function getMensagemRuptura(item) {
+  const rupturaEmDias = getRupturaEmDias(item);
+
+  if (rupturaEmDias === null) {
+    return "Sem previsao de ruptura";
+  }
+
+  if (rupturaEmDias === 0) {
+    return "Ruptura imediata";
+  }
+
+  if (rupturaEmDias === 1) {
+    return "Ruptura iminente em 1 dia";
+  }
+
+  return `Ruptura iminente em ${rupturaEmDias} dias`;
 }
 
 class BatchWriter {
