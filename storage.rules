@@ -4,6 +4,8 @@ service firebase.storage {
   match /b/{bucket}/o {
 
     match /{allPaths=**} {
+      // Modo de testes: nao faca deploy destas regras em producao SaaS.
+      // O backend Render usa Firebase Admin SDK e nao depende desta permissao.
       allow read, write: if true;
     }
 

@@ -1,4 +1,173 @@
 {
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionGroup": "vendas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_venda",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vendas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "ranking_vendas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ranking",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "ranking_vendas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "total_vendido",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "curva_abc",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classe",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "total_vendido",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "previsao_ruptura",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "risco",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dias_cobertura",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sugestoes_compra",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "prioridade",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "investimento_sugerido",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "alertas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "prioridade",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "criado_em",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "import_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "import_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tipo_arquivo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
   "fieldOverrides": []
 }
