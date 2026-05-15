@@ -107,9 +107,13 @@ async function rebuildAnalytics(empresaId = null) {
   const alertas = buildAlerts(metricsList);
   const produtosMortos = metricsList.filter(
     (item) => {
+      const semVenda = item.quantidadeVendida <= 0 && item.totalVendido <= 0;
+      const coberturaExcessiva = item.mediaVendaDia > 0 &&
+        item.diasCobertura !== null &&
+        item.diasCobertura >= 90;
+
       return item.estoqueAtual >= DEAD_STOCK_MIN_UNITS &&
-        item.quantidadeVendida <= 0 &&
-        item.totalVendido <= 0;
+        (semVenda || coberturaExcessiva);
     },
   );
 
