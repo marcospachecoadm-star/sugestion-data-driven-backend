@@ -191,18 +191,27 @@ async function rebuildAnalytics(empresaId = null) {
 
   const mortosResumoDocId = empresaId ? `${safeDocId(empresaId)}_resumo` : "_resumo";
   const valorTotalParado = sum(produtosMortos, (item) => item.estoqueAtual * item.custoUnitario);
-  await db
-    .collection("mortos")
-    .doc(mortosResumoDocId)
-    .set({
-      tipo: "resumo",
-      empresa_id: empresaId || null,
-      total_itens: produtosMortos.length,
-      valor_total_parado: round(valorTotalParado),
-      valor_total_parado_formatado: formatCurrency(valorTotalParado),
-      media_dias_parados: produtosMortos.length > 0 ? 90 : 0,
-      atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
-    }, {merge: true});
+  const somaDiasParados = sum(produtosMortos, (item) => {
+    if (item.diasCobertura !== null && item.diasCobertura >= 90) {
+      return item.diasCobertura;
+    }
+
+    return 90;
+  });
+  const resumoMortos = {
+    tipo: "resumo",
+    empresa_id: empresaId || null,
+    total_itens: produtosMortos.length,
+    valor_total_parado: round(valorTotalParado),
+    valor_total_parado_formatado: formatCurrency(valorTotalParado),
+    media_dias_parados: produtosMortos.length > 0 ? round(somaDiasParados / produtosMortos.length) : 0,
+    atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await Promise.all([
+    db.collection("mortos").doc(mortosResumoDocId).set(resumoMortos, {merge: true}),
+    db.collection("produtos_mortos").doc(mortosResumoDocId).set(resumoMortos, {merge: true}),
+  ]);
 
   await db.doc(`insights/${dashboardDocId}`).set(
     {

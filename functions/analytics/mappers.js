@@ -107,6 +107,7 @@ function toProdutoMortoDoc(item) {
   const diasParados = item.diasCobertura === null ? 90 : Math.max(90, round(item.diasCobertura));
 
   return {
+    tipo: "item",
     empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
