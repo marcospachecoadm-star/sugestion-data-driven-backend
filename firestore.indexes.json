@@ -75,6 +75,24 @@
       ]
     },
     {
+      "collectionGroup": "curva_abc",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "empresa_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ranking",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "previsao_ruptura",
       "queryScope": "COLLECTION",
       "fields": [

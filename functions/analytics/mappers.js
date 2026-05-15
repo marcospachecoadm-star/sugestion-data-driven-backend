@@ -33,16 +33,22 @@ function toRankingDoc(item) {
 
 function toCurvaAbcDoc(item) {
   return {
+    tipo: "item",
     empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
+    ranking: item.ranking,
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
     percentual_vendas: round(item.percentualVendas),
     percentual_vendas_formatado: formatPercent(item.percentualVendas),
+    participacao: round(item.percentualVendas),
+    participacao_formatada: formatPercent(item.percentualVendas),
     percentual_acumulado: round(item.percentualAcumulado),
     percentual_acumulado_formatado: formatPercent(item.percentualAcumulado),
+    acumulado: round(item.percentualAcumulado),
+    acumulado_formatado: formatPercent(item.percentualAcumulado),
     disponibilidade_prateleira: round(item.disponibilidadePrateleira),
     disponibilidade_prateleira_formatada: formatPercent(item.disponibilidadePrateleira),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
@@ -50,6 +56,7 @@ function toCurvaAbcDoc(item) {
     status_niq: item.statusNiq,
     acao_recomendada: item.acaoRecomendada,
     classe: item.abcClass,
+    classe_label: `Classe ${item.abcClass}`,
   };
 }
 

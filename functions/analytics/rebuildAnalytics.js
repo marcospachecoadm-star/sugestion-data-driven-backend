@@ -158,9 +158,54 @@ async function rebuildAnalytics(empresaId = null) {
     (vendaPerdidaEstimada / (totalVendas + vendaPerdidaEstimada)) * 100 :
     0;
   const itensCriticos = riscoAlto;
+  const curvaClasseA = metricsList.filter((item) => item.abcClass === "A");
+  const curvaClasseB = metricsList.filter((item) => item.abcClass === "B");
+  const curvaClasseC = metricsList.filter((item) => item.abcClass === "C");
+  const vendaClasseA = sum(curvaClasseA, (item) => item.totalVendido);
+  const vendaClasseB = sum(curvaClasseB, (item) => item.totalVendido);
+  const vendaClasseC = sum(curvaClasseC, (item) => item.totalVendido);
+  const percentualItensClasseA = metricsList.length > 0 ? (curvaClasseA.length / metricsList.length) * 100 : 0;
+  const percentualItensClasseB = metricsList.length > 0 ? (curvaClasseB.length / metricsList.length) * 100 : 0;
+  const percentualItensClasseC = metricsList.length > 0 ? (curvaClasseC.length / metricsList.length) * 100 : 0;
+  const percentualFaturamentoClasseA = totalVendas > 0 ? (vendaClasseA / totalVendas) * 100 : 0;
+  const percentualFaturamentoClasseB = totalVendas > 0 ? (vendaClasseB / totalVendas) * 100 : 0;
+  const percentualFaturamentoClasseC = totalVendas > 0 ? (vendaClasseC / totalVendas) * 100 : 0;
 
   const dashboardDocId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
+  const curvaResumoDocId = empresaId ? `${safeDocId(empresaId)}_resumo` : "_resumo";
   const rupturaResumoDocId = empresaId ? `${safeDocId(empresaId)}_resumo` : "_resumo";
+  const resumoCurvaAbc = {
+    tipo: "resumo",
+    empresa_id: empresaId || null,
+    metodologia_curva_abc: "Curva ABC por faturamento: Classe A ate 80% acumulado, Classe B ate 95%, Classe C acima de 95%.",
+    total_itens: metricsList.length,
+    total_vendas: round(totalVendas),
+    total_vendas_formatado: formatCurrency(totalVendas),
+    itens_classe_a: curvaClasseA.length,
+    itens_classe_b: curvaClasseB.length,
+    itens_classe_c: curvaClasseC.length,
+    percentual_itens_classe_a: round(percentualItensClasseA),
+    percentual_itens_classe_a_formatado: formatPercent(percentualItensClasseA),
+    percentual_itens_classe_b: round(percentualItensClasseB),
+    percentual_itens_classe_b_formatado: formatPercent(percentualItensClasseB),
+    percentual_itens_classe_c: round(percentualItensClasseC),
+    percentual_itens_classe_c_formatado: formatPercent(percentualItensClasseC),
+    classe_a_itens_percentual: round(percentualItensClasseA),
+    classe_a_itens_percentual_formatado: formatPercent(percentualItensClasseA),
+    classe_a_faturamento: round(vendaClasseA),
+    classe_a_faturamento_formatado: formatCurrency(vendaClasseA),
+    classe_a_faturamento_percentual: round(percentualFaturamentoClasseA),
+    classe_a_faturamento_percentual_formatado: formatPercent(percentualFaturamentoClasseA),
+    classe_b_faturamento: round(vendaClasseB),
+    classe_b_faturamento_formatado: formatCurrency(vendaClasseB),
+    classe_b_faturamento_percentual: round(percentualFaturamentoClasseB),
+    classe_b_faturamento_percentual_formatado: formatPercent(percentualFaturamentoClasseB),
+    classe_c_faturamento: round(vendaClasseC),
+    classe_c_faturamento_formatado: formatCurrency(vendaClasseC),
+    classe_c_faturamento_percentual: round(percentualFaturamentoClasseC),
+    classe_c_faturamento_percentual_formatado: formatPercent(percentualFaturamentoClasseC),
+    atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
   const resumoRuptura = {
     tipo: "resumo",
     empresa_id: empresaId || null,
@@ -183,6 +228,11 @@ async function rebuildAnalytics(empresaId = null) {
     venda_perdida_estimada_formatada: formatCurrency(vendaPerdidaEstimada),
     atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
   };
+
+  await db
+    .collection("curva_abc")
+    .doc(curvaResumoDocId)
+    .set(resumoCurvaAbc, {merge: true});
 
   await db
     .collection("previsao_ruptura")
@@ -244,6 +294,13 @@ async function rebuildAnalytics(empresaId = null) {
       produtos_mortos_valor_total_parado: resumoMortos.valor_total_parado,
       produtos_mortos_valor_total_parado_formatado: resumoMortos.valor_total_parado_formatado,
       produtos_mortos_media_dias_parados: resumoMortos.media_dias_parados,
+      curva_abc_itens_classe_a: resumoCurvaAbc.itens_classe_a,
+      curva_abc_itens_classe_b: resumoCurvaAbc.itens_classe_b,
+      curva_abc_itens_classe_c: resumoCurvaAbc.itens_classe_c,
+      curva_abc_percentual_itens_classe_a: resumoCurvaAbc.percentual_itens_classe_a,
+      curva_abc_percentual_itens_classe_a_formatado: resumoCurvaAbc.percentual_itens_classe_a_formatado,
+      curva_abc_faturamento_classe_a_percentual: resumoCurvaAbc.classe_a_faturamento_percentual,
+      curva_abc_faturamento_classe_a_percentual_formatado: resumoCurvaAbc.classe_a_faturamento_percentual_formatado,
       total_vendas: round(totalVendas),
       total_vendas_formatado: formatCurrency(totalVendas),
       total_vendas_7_dias: round(totalVendas7Dias),
@@ -263,6 +320,11 @@ async function rebuildAnalytics(empresaId = null) {
     alertas: alertas.length,
     produtosMortos: produtosMortos.length,
     rankingVendas: metricsList.length,
+    curvaAbc: {
+      itensClasseA: resumoCurvaAbc.itens_classe_a,
+      percentualItensClasseA: resumoCurvaAbc.percentual_itens_classe_a,
+      faturamentoClasseAPercentual: resumoCurvaAbc.classe_a_faturamento_percentual,
+    },
     totalVendas: round(totalVendas),
     totalVendas7Dias: round(totalVendas7Dias),
     vendaPerdidaEstimada: round(vendaPerdidaEstimada),
