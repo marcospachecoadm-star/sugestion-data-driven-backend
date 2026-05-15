@@ -1,6 +1,7 @@
 const express = require("express");
 const {handleResumoIndicadores} = require("../controllers/indicadoresController");
 const {handleRunAnalytics} = require("../controllers/analyticsController");
+const {handleProdutosMortos} = require("../controllers/produtosMortosController");
 const {handleRankingVendas} = require("../controllers/rankingController");
 const {handleResumoPrevisaoRuptura} = require("../controllers/rupturaController");
 const {
@@ -18,6 +19,7 @@ router.get("/", (_req, res) => {
     routes: [
       "/health",
       "/ranking-vendas",
+      "/produtos-mortos",
       "/indicadores/resumo",
       "/previsao-ruptura/resumo",
       "/import-storage-csv",
@@ -33,6 +35,7 @@ router.get("/health", (_req, res) => {
 
 router.get("/debug-storage", requireApiKey, handleDebugStorage);
 router.get("/ranking-vendas", requireApiKey, handleRankingVendas);
+router.get("/produtos-mortos", requireApiKey, handleProdutosMortos);
 router.get("/indicadores/resumo", requireApiKey, handleResumoIndicadores);
 router.get("/previsao-ruptura/resumo", requireApiKey, handleResumoPrevisaoRuptura);
 router.get("/run-analytics", requireApiKey, handleRunAnalytics);

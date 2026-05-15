@@ -102,12 +102,21 @@ function toSugestaoCompraDoc(item) {
 }
 
 function toProdutoMortoDoc(item) {
+  const valorParado = item.estoqueAtual * item.custoUnitario;
+
   return {
     empresa_id: item.empresaId || null,
     produto_id: item.produtoId,
     produto_nome: item.produtoNome,
     categoria: item.categoria,
     estoque_atual: round(item.estoqueAtual),
+    estoque_atual_formatado: `${round(item.estoqueAtual)} un`,
+    custo_unitario: round(item.custoUnitario),
+    custo_unitario_formatado: formatCurrency(item.custoUnitario),
+    valor_parado: round(valorParado),
+    valor_parado_formatado: formatCurrency(valorParado),
+    dias_parados: 90,
+    dias_parados_formatado: "90 dias",
     quantidade_vendida: round(item.quantidadeVendida),
     total_vendido: round(item.totalVendido),
     total_vendido_formatado: formatCurrency(item.totalVendido),
