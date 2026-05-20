@@ -10,16 +10,16 @@ Toda execucao analitica deve ser escopada por empresa. O backend recusa chamadas
 Chamadas recomendadas:
 
 ```txt
-/run-analytics?empresaId=sua_empresa
-/import-storage-csv?empresaId=sua_empresa
-/import-and-run?empresaId=sua_empresa
+/run-analytics?empresaId=superparanaloja1
+/import-storage-csv?empresaId=superparanaloja1
+/import-and-run?empresaId=superparanaloja1
 ```
 
 Headers:
 
 ```txt
 x-api-key: chave-do-backend
-x-empresa-id: sua_empresa
+x-empresa-id: superparanaloja1
 ```
 
 Guardrails ativos:
@@ -76,7 +76,7 @@ Para o FlutterFlow/Firebase funcionar como SaaS, cada usuario autenticado deve r
 
 ```json
 {
-  "empresa_id": "sua_empresa"
+  "empresa_id": "superparanaloja1"
 }
 ```
 

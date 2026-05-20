@@ -55,6 +55,6 @@ services:
       - key: BACKEND_PUBLIC_URL
         value: https://sugestion-data-driven.onrender.com
       - key: CRON_EMPRESA_ID
-        value: datadriven-4816c
+        value: superparanaloja1
       - key: SUGESTION_DATA_DRIVEN_API_KEY
         sync: false
