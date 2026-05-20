@@ -20,6 +20,7 @@ const WARNING_COVERAGE_DAYS = Number(process.env.WARNING_COVERAGE_DAYS || 15);
 const OSA_TARGET_PERCENT = Number(process.env.OSA_TARGET_PERCENT || 97);
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
 const REQUIRE_API_KEY = process.env.REQUIRE_API_KEY !== "false";
+const ALLOW_API_KEY_QUERY = process.env.ALLOW_API_KEY_QUERY === "true";
 const ALLOW_GLOBAL_JOBS = process.env.ALLOW_GLOBAL_JOBS === "true";
 const MAX_UPLOAD_FILES_PER_RUN = Number(process.env.MAX_UPLOAD_FILES_PER_RUN || 10);
 const MAX_CSV_ROWS_PER_FILE = Number(process.env.MAX_CSV_ROWS_PER_FILE || 5000);
@@ -1179,6 +1180,7 @@ function getStorageBucket() {
 
 function requireApiKey(req, res, next) {
   const expectedKey = process.env.SUGESTION_DATA_DRIVEN_API_KEY;
+  const providedKey = req.header("x-api-key") || (ALLOW_API_KEY_QUERY ? req.query.apiKey : null);
   if (!expectedKey && !REQUIRE_API_KEY) {
     next();
     return;
@@ -1189,7 +1191,7 @@ function requireApiKey(req, res, next) {
     return;
   }
 
-  if (req.header("x-api-key") !== expectedKey) {
+  if (providedKey !== expectedKey) {
     res.status(401).json({ok: false, error: "API key invalida."});
     return;
   }
