@@ -48,14 +48,37 @@ const OUTPUT_COLLECTIONS = {
   sugestoesCompra: "sugestoesCompra",
 };
 
-const PRODUCT_ID_KEYS = ["produto_id", "id", "sku", "codigo", "cod_produto"];
-const PRODUCT_NAME_KEYS = ["produto_nome", "nome", "descricao", "descricao_produto"];
+const PRODUCT_ID_KEYS = [
+  "produto_id",
+  "id",
+  "sku",
+  "codigo",
+  "cod_produto",
+  "codproduto",
+  "cod_prod",
+  "codprod",
+  "cod_item",
+  "coditem",
+  "ean",
+  "gtin",
+];
+const PRODUCT_NAME_KEYS = ["produto_nome", "nome", "descricao", "descricao_produto", "produto", "item"];
 const CATEGORY_KEYS = ["categoria", "departamento", "grupo"];
 const SUPPLIER_KEYS = ["fornecedor", "distribuidor", "supplier"];
 const BRAND_KEYS = ["marca", "brand"];
-const STOCK_QUANTITY_KEYS = ["estoque_atual", "quantidade_estoque", "quantidade", "qtd", "qtde", "saldo", "estoque"];
+const STOCK_QUANTITY_KEYS = [
+  "estoque_atual",
+  "quantidade_estoque",
+  "quantidade",
+  "qtd",
+  "qtde",
+  "saldo",
+  "estoque",
+  "estoque_disponivel",
+  "estoque_total",
+];
 const MIN_STOCK_KEYS = ["estoque_minimo", "minimo", "estoqueMinimo", "min"];
-const SALES_QUANTITY_KEYS = ["quantidade_vendida", "quantidade", "qtd", "qtde", "qty"];
+const SALES_QUANTITY_KEYS = ["quantidade_vendida", "quantidade", "qtd", "qtde", "qty", "qtd_vendida", "qtde_vendida"];
 const SALES_TOTAL_KEYS = [
   "total_vendido",
   "valor_total",
@@ -72,8 +95,8 @@ const SALES_TOTAL_KEYS = [
   "valor_item",
   "subtotal",
 ];
-const UNIT_PRICE_KEYS = ["preco_unitario", "valor_unitario", "preco", "valor_produto", "preco_venda"];
-const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco"];
+const UNIT_PRICE_KEYS = ["preco_unitario", "valor_unitario", "preco", "valor_produto", "preco_venda", "preco_de_venda"];
+const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco", "preco_de_custo"];
 const DATE_KEYS = ["data", "data_venda", "criado_em", "created_at", "ultima_venda_em"];
 
 initializeFirebase();
@@ -276,7 +299,7 @@ function readCsv(tempFilePath, empresaId) {
     fs.createReadStream(tempFilePath)
       .pipe(csv({
         separator: ",",
-        mapHeaders: ({header}) => header.trim().replace(/^\uFEFF/, ""),
+        mapHeaders: ({header}) => normalizeHeader(header),
         mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
       }))
       .on("data", (data) => {
@@ -291,7 +314,7 @@ function readCsv(tempFilePath, empresaId) {
         const row = {};
 
         for (const originalKey in data) {
-          const key = originalKey.trim().replace(/^\uFEFF/, "");
+          const key = normalizeHeader(originalKey);
           row[key] = parseCsvValue(key, data[originalKey]);
         }
 
@@ -350,13 +373,13 @@ async function rebuildAnalytics(empresaId = null) {
   const metricsByProduct = new Map();
 
   for (const doc of productsSnap.docs) {
-    const data = doc.data();
+    const data = normalizeRecordKeys(doc.data());
     const productId = normalizeProductId(firstString(data, PRODUCT_ID_KEYS, doc.id));
     metricsByProduct.set(productId, createMetrics(productId, data));
   }
 
   for (const doc of stockSnap.docs) {
-    const data = doc.data();
+    const data = normalizeRecordKeys(doc.data());
     const productId = normalizeProductId(firstString(data, PRODUCT_ID_KEYS, doc.id));
     const metrics = getOrCreateMetrics(metricsByProduct, productId, data);
 
@@ -368,7 +391,7 @@ async function rebuildAnalytics(empresaId = null) {
   let vendasProcessadas = 0;
 
   for (const doc of salesSnap.docs) {
-    const data = doc.data();
+    const data = normalizeRecordKeys(doc.data());
     const saleDate = getRecordDate(data);
     if (saleDate && saleDate < cutoffDate) {
       continue;
@@ -1247,6 +1270,27 @@ function parseCsvValue(key, value) {
   }
 
   return value;
+}
+
+function normalizeRecordKeys(data) {
+  const normalized = {};
+
+  for (const key in data) {
+    normalized[normalizeHeader(key)] = data[key];
+  }
+
+  return normalized;
+}
+
+function normalizeHeader(header) {
+  return String(header || "")
+    .trim()
+    .replace(/^\uFEFF/, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
 }
 
 function normalizeProductId(value) {
