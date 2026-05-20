@@ -19,6 +19,14 @@ const CRITICAL_COVERAGE_DAYS = Number(process.env.CRITICAL_COVERAGE_DAYS || 3);
 const WARNING_COVERAGE_DAYS = Number(process.env.WARNING_COVERAGE_DAYS || 15);
 const OSA_TARGET_PERCENT = Number(process.env.OSA_TARGET_PERCENT || 97);
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
+const REQUIRE_API_KEY = process.env.REQUIRE_API_KEY !== "false";
+const ALLOW_GLOBAL_JOBS = process.env.ALLOW_GLOBAL_JOBS === "true";
+const MAX_UPLOAD_FILES_PER_RUN = Number(process.env.MAX_UPLOAD_FILES_PER_RUN || 10);
+const MAX_CSV_ROWS_PER_FILE = Number(process.env.MAX_CSV_ROWS_PER_FILE || 5000);
+const MAX_PRODUCTS_PER_ANALYTICS = Number(process.env.MAX_PRODUCTS_PER_ANALYTICS || 5000);
+const MAX_STOCK_ROWS_PER_ANALYTICS = Number(process.env.MAX_STOCK_ROWS_PER_ANALYTICS || 5000);
+const MAX_SALES_ROWS_PER_ANALYTICS = Number(process.env.MAX_SALES_ROWS_PER_ANALYTICS || 20000);
+const MAX_ITEMS_PER_INDICATOR = Number(process.env.MAX_ITEMS_PER_INDICATOR || 250);
 
 const RAW_COLLECTIONS = {
   produtos: "produtos",
@@ -81,8 +89,9 @@ app.get("/health", (_req, res) => {
 app.get("/debug-storage", requireApiKey, async (req, res) => {
   try {
     const empresaId = getEmpresaIdFromRequest(req);
-    const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
-    const [files] = await getStorageBucket().getFiles({prefix});
+    assertTenantScope(empresaId);
+    const prefix = `uploads/${empresaId}/`;
+    const [files] = await getStorageBucket().getFiles({prefix, maxResults: MAX_UPLOAD_FILES_PER_RUN});
 
     res.json({
       ok: true,
@@ -123,6 +132,7 @@ app.post("/run-analytics", requireApiKey, async (req, res) => {
 async function handleImport(req, res, shouldRunAnalytics) {
   try {
     const requestedEmpresaId = getEmpresaIdFromRequest(req);
+    assertTenantScope(requestedEmpresaId);
     const importacao = await processPendingUploads(requestedEmpresaId);
     const empresas = requestedEmpresaId ?
       [requestedEmpresaId] :
@@ -144,6 +154,7 @@ async function handleImport(req, res, shouldRunAnalytics) {
 async function handleAnalytics(req, res) {
   try {
     const empresaId = getEmpresaIdFromRequest(req);
+    assertTenantScope(empresaId);
     const summary = await rebuildAnalytics(empresaId);
     res.json({ok: true, summary});
   } catch (error) {
@@ -152,9 +163,10 @@ async function handleAnalytics(req, res) {
 }
 
 async function processPendingUploads(empresaId = null) {
+  assertTenantScope(empresaId);
   const bucket = getStorageBucket();
-  const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
-  const [files] = await bucket.getFiles({prefix});
+  const prefix = `uploads/${empresaId}/`;
+  const [files] = await bucket.getFiles({prefix, maxResults: MAX_UPLOAD_FILES_PER_RUN});
   const resultados = [];
 
   for (const file of files) {
@@ -253,6 +265,7 @@ function collectionForFileType(fileType) {
 function readCsv(tempFilePath, empresaId) {
   return new Promise((resolve, reject) => {
     const rows = [];
+    let rejected = false;
 
     fs.createReadStream(tempFilePath)
       .pipe(csv({
@@ -261,6 +274,14 @@ function readCsv(tempFilePath, empresaId) {
         mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
       }))
       .on("data", (data) => {
+        if (rows.length >= MAX_CSV_ROWS_PER_FILE) {
+          if (!rejected) {
+            rejected = true;
+            reject(new Error(`CSV excede o limite de ${MAX_CSV_ROWS_PER_FILE} linhas por arquivo.`));
+          }
+          return;
+        }
+
         const row = {};
 
         for (const originalKey in data) {
@@ -271,8 +292,17 @@ function readCsv(tempFilePath, empresaId) {
         row.empresa_id = empresaId;
         rows.push(row);
       })
-      .on("end", () => resolve(rows))
-      .on("error", reject);
+      .on("end", () => {
+        if (!rejected) {
+          resolve(rows);
+        }
+      })
+      .on("error", (error) => {
+        if (!rejected) {
+          rejected = true;
+          reject(error);
+        }
+      });
   });
 }
 
@@ -297,6 +327,7 @@ function getRawDocumentId(collectionName, row) {
 }
 
 async function rebuildAnalytics(empresaId = null) {
+  assertTenantScope(empresaId);
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - WINDOW_DAYS);
 
@@ -305,6 +336,10 @@ async function rebuildAnalytics(empresaId = null) {
     getTenantDocs(RAW_COLLECTIONS.estoque, empresaId),
     getTenantDocs(RAW_COLLECTIONS.vendas, empresaId),
   ]);
+
+  assertSnapshotSize(productsSnap, MAX_PRODUCTS_PER_ANALYTICS, RAW_COLLECTIONS.produtos);
+  assertSnapshotSize(stockSnap, MAX_STOCK_ROWS_PER_ANALYTICS, RAW_COLLECTIONS.estoque);
+  assertSnapshotSize(salesSnap, MAX_SALES_ROWS_PER_ANALYTICS, RAW_COLLECTIONS.vendas);
 
   const metricsByProduct = new Map();
 
@@ -351,7 +386,9 @@ async function rebuildAnalytics(empresaId = null) {
   calculateNielsenMetrics(metricsList);
 
   const alertas = buildAlerts(metricsList);
-  const sugestoesCompra = metricsList.filter((item) => item.quantidadeSugerida > 0).sort(compareBusinessPriority);
+  const sugestoesCompra = limitRows(
+    metricsList.filter((item) => item.quantidadeSugerida > 0).sort(compareBusinessPriority),
+  );
   const acoesRecomendadas = buildRecommendedActions(metricsList);
   const indicadoresItens = buildIndicatorItems(metricsList, alertas, acoesRecomendadas);
   const resumo = buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRecomendadas, vendasProcessadas);
@@ -653,7 +690,7 @@ function buildAlerts(metricsList) {
     }
   }
 
-  return alerts.sort(compareBusinessPriority);
+  return limitRows(alerts.sort(compareBusinessPriority));
 }
 
 function buildRecommendedActions(metricsList) {
@@ -679,14 +716,18 @@ function buildRecommendedActions(metricsList) {
     }
   }
 
-  return actions.sort(compareBusinessPriority);
+  return limitRows(actions.sort(compareBusinessPriority));
 }
 
 function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
   const items = [];
+  const giroItems = [];
+  const criticalItems = [];
+  const noSalesItems = [];
+  const purchaseItems = [];
 
   for (const item of metricsList) {
-    items.push(toIndicatorItemDoc("giro_medio", item, {
+    giroItems.push(toIndicatorItemDoc("giro_medio", item, {
       status: item.statusGiro,
       valor: item.giroDiario,
       valorFormatado: `${round(item.coberturaDias || 0)} dias`,
@@ -694,7 +735,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
     }));
 
     if (["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
-      items.push(toIndicatorItemDoc("itens_criticos", item, {
+      criticalItems.push(toIndicatorItemDoc("itens_criticos", item, {
         status: item.statusEstoque,
         valor: item.estoqueAtual,
         valorFormatado: `${round(item.coberturaDias || 0)} dias`,
@@ -703,7 +744,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
     }
 
     if (item.statusEstoque === "sem_vendas") {
-      items.push(toIndicatorItemDoc("itens_sem_vendas", item, {
+      noSalesItems.push(toIndicatorItemDoc("itens_sem_vendas", item, {
         status: "sem_vendas",
         valor: item.valorParado,
         valorFormatado: formatCurrency(item.valorParado),
@@ -712,7 +753,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
     }
 
     if (item.quantidadeSugerida > 0) {
-      items.push(toIndicatorItemDoc("sugestao_compra", item, {
+      purchaseItems.push(toIndicatorItemDoc("sugestao_compra", item, {
         status: item.prioridade,
         valor: item.investimentoSugerido,
         valorFormatado: formatCurrency(item.investimentoSugerido),
@@ -720,6 +761,11 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
       }));
     }
   }
+
+  items.push(...limitRows(giroItems.sort(compareIndicatorRanking)));
+  items.push(...limitRows(criticalItems.sort(compareBusinessPriority)));
+  items.push(...limitRows(noSalesItems.sort(compareBusinessPriority)));
+  items.push(...limitRows(purchaseItems.sort(compareBusinessPriority)));
 
   return [
     ...items,
@@ -842,10 +888,9 @@ function getActionDescription(item) {
 }
 
 async function replaceOutputCollection(collectionName, rows, empresaId = null) {
+  assertTenantScope(empresaId);
   const collectionRef = db.collection(collectionName);
-  const existing = empresaId ?
-    await collectionRef.where("empresa_id", "==", empresaId).get() :
-    await collectionRef.get();
+  const existing = await collectionRef.where("empresa_id", "==", empresaId).get();
   const writer = new BatchWriter(db);
 
   for (const doc of existing.docs) {
@@ -866,11 +911,8 @@ async function replaceOutputCollection(collectionName, rows, empresaId = null) {
 }
 
 async function getTenantDocs(collectionName, empresaId) {
+  assertTenantScope(empresaId);
   const collectionRef = db.collection(collectionName);
-  if (!empresaId) {
-    return collectionRef.get();
-  }
-
   return collectionRef.where("empresa_id", "==", empresaId).get();
 }
 
@@ -880,8 +922,45 @@ function compareBusinessPriority(a, b) {
     return priorityDiff;
   }
 
-  return (b.venda_perdida_estimada || b.investimentoSugerido || b.valorParado || 0) -
-    (a.venda_perdida_estimada || a.investimentoSugerido || a.valorParado || 0);
+  return (b.venda_perdida_estimada || b.investimentoSugerido || b.investimento_sugerido || b.valorParado || b.valor_parado || 0) -
+    (a.venda_perdida_estimada || a.investimentoSugerido || a.investimento_sugerido || a.valorParado || a.valor_parado || 0);
+}
+
+function compareIndicatorRanking(a, b) {
+  const rankA = a.ranking || 999999;
+  const rankB = b.ranking || 999999;
+  return rankA - rankB;
+}
+
+function limitRows(rows) {
+  return rows.slice(0, MAX_ITEMS_PER_INDICATOR);
+}
+
+function assertTenantScope(empresaId) {
+  if (empresaId) {
+    return;
+  }
+
+  if (ALLOW_GLOBAL_JOBS) {
+    return;
+  }
+
+  const error = new Error("empresaId obrigatorio para execucoes SaaS. Envie ?empresaId=... ou header x-empresa-id.");
+  error.statusCode = 400;
+  throw error;
+}
+
+function assertSnapshotSize(snapshot, maxRows, collectionName) {
+  if (snapshot.size <= maxRows) {
+    return;
+  }
+
+  const error = new Error(
+    `Limite de custo excedido em ${collectionName}: ${snapshot.size} docs encontrados, maximo ${maxRows}. ` +
+      "Filtre por empresa, reduza o lote ou aumente o limite via variavel de ambiente.",
+  );
+  error.statusCode = 413;
+  throw error;
 }
 
 class BatchWriter {
@@ -969,8 +1048,13 @@ function getStorageBucket() {
 
 function requireApiKey(req, res, next) {
   const expectedKey = process.env.SUGESTION_DATA_DRIVEN_API_KEY;
-  if (!expectedKey) {
+  if (!expectedKey && !REQUIRE_API_KEY) {
     next();
+    return;
+  }
+
+  if (!expectedKey) {
+    res.status(500).json({ok: false, error: "SUGESTION_DATA_DRIVEN_API_KEY nao configurada."});
     return;
   }
 
@@ -1159,7 +1243,7 @@ function cryptoSafeId() {
 
 function sendError(res, error) {
   console.error(error);
-  res.status(500).json({
+  res.status(error.statusCode || 500).json({
     ok: false,
     error: error && error.message ? error.message : "Erro desconhecido",
   });

@@ -10,6 +10,22 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: REQUIRE_API_KEY
+        value: "true"
+      - key: ALLOW_GLOBAL_JOBS
+        value: "false"
+      - key: MAX_UPLOAD_FILES_PER_RUN
+        value: "10"
+      - key: MAX_CSV_ROWS_PER_FILE
+        value: "5000"
+      - key: MAX_PRODUCTS_PER_ANALYTICS
+        value: "5000"
+      - key: MAX_STOCK_ROWS_PER_ANALYTICS
+        value: "5000"
+      - key: MAX_SALES_ROWS_PER_ANALYTICS
+        value: "20000"
+      - key: MAX_ITEMS_PER_INDICATOR
+        value: "250"
       - key: SUGESTION_DATA_DRIVEN_API_KEY
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_BASE64

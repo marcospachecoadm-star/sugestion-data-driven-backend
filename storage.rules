@@ -2,12 +2,37 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-
-    match /{allPaths=**} {
-      // Modo de testes: nao faca deploy destas regras em producao SaaS.
-      // O backend Render usa Firebase Admin SDK e nao depende desta permissao.
-      allow read, write: if true;
+    function signedIn() {
+      return request.auth != null;
     }
 
+    function tenantId() {
+      return request.auth.token.empresa_id;
+    }
+
+    function isTenantUpload(empresaId) {
+      return signedIn() && tenantId() == empresaId;
+    }
+
+    match /uploads/{empresaId}/{fileName} {
+      allow read: if isTenantUpload(empresaId);
+      allow write: if isTenantUpload(empresaId) &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        fileName.matches('.*\\.csv');
+    }
+
+    match /processada/{empresaId}/{fileName} {
+      allow read: if isTenantUpload(empresaId);
+      allow write: if false;
+    }
+
+    match /erro/{empresaId}/{fileName} {
+      allow read: if isTenantUpload(empresaId);
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
   }
 }

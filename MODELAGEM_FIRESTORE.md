@@ -3,6 +3,54 @@
 Analytics calculado em janela movel de 45 dias, seguindo a logica NielsenIQ OSA:
 disponibilidade, giro, cobertura, ruptura, estoque parado e acao recomendada por SKU.
 
+## SaaS e controle de custo
+
+Toda execucao analitica deve ser escopada por empresa. O backend recusa chamadas sem `empresaId`, exceto se `ALLOW_GLOBAL_JOBS=true` for configurado manualmente.
+
+Chamadas recomendadas:
+
+```txt
+/run-analytics?empresaId=sua_empresa
+/import-storage-csv?empresaId=sua_empresa
+/import-and-run?empresaId=sua_empresa
+```
+
+Headers:
+
+```txt
+x-api-key: chave-do-backend
+x-empresa-id: sua_empresa
+```
+
+Guardrails ativos:
+
+- `REQUIRE_API_KEY=true`
+- `ALLOW_GLOBAL_JOBS=false`
+- `MAX_UPLOAD_FILES_PER_RUN=10`
+- `MAX_CSV_ROWS_PER_FILE=5000`
+- `MAX_PRODUCTS_PER_ANALYTICS=5000`
+- `MAX_STOCK_ROWS_PER_ANALYTICS=5000`
+- `MAX_SALES_ROWS_PER_ANALYTICS=20000`
+- `MAX_ITEMS_PER_INDICATOR=250`
+
+Para o FlutterFlow/Firebase funcionar como SaaS, cada usuario autenticado deve receber custom claim:
+
+```json
+{
+  "empresa_id": "sua_empresa"
+}
+```
+
+Usuarios administradores internos podem receber:
+
+```json
+{
+  "admin": true
+}
+```
+
+O backend Render usa Firebase Admin SDK e ignora regras de cliente, mas o app FlutterFlow respeita `firestore.rules` e `storage.rules`.
+
 ## Colecoes de entrada
 
 ### produtos
@@ -211,4 +259,4 @@ orderBy prioridade desc
 
 ## Observacao
 
-Esta modelagem substitui a estrutura antiga. O backend novo gera apenas as colecoes operacionais de entrada e as colecoes analiticas acima.
+Esta modelagem substitui a estrutura antiga. O backend novo gera apenas as colecoes operacionais de entrada e as colecoes analiticas acima, sempre isoladas por `empresa_id`.

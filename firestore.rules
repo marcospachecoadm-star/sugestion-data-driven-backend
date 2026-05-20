@@ -2,18 +2,90 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
 
-    // This rule allows anyone with your Firestore database reference to view, edit,
-    // and delete all data in your Firestore database. It is useful for getting
-    // started, but it is configured to expire after 30 days because it
-    // leaves your app open to attackers. At that time, all client
-    // requests to your Firestore database will be denied.
-    //
-    // Make sure to write security rules for your app before that time, or else
-    // all client requests to your Firestore database will be denied until you Update
-    // your rules
+    function tenantId() {
+      return request.auth.token.empresa_id;
+    }
+
+    function isTenantDoc() {
+      return signedIn() &&
+        tenantId() != null &&
+        resource.data.empresa_id == tenantId();
+    }
+
+    function isCreatingTenantDoc() {
+      return signedIn() &&
+        tenantId() != null &&
+        request.resource.data.empresa_id == tenantId();
+    }
+
+    function isServiceAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    match /usuarios/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isServiceAdmin());
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn() && request.auth.uid == userId;
+      allow delete: if isServiceAdmin();
+    }
+
+    match /empresas/{empresaId} {
+      allow read: if signedIn() && (tenantId() == empresaId || isServiceAdmin());
+      allow write: if isServiceAdmin();
+    }
+
+    match /produtos/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow create: if isCreatingTenantDoc() || isServiceAdmin();
+      allow update, delete: if isTenantDoc() || isServiceAdmin();
+    }
+
+    match /estoque/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow create: if isCreatingTenantDoc() || isServiceAdmin();
+      allow update, delete: if isTenantDoc() || isServiceAdmin();
+    }
+
+    match /vendas/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow create: if isCreatingTenantDoc() || isServiceAdmin();
+      allow update, delete: if isTenantDoc() || isServiceAdmin();
+    }
+
+    match /indicadoresResumo/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow write: if isServiceAdmin();
+    }
+
+    match /indicadoresItens/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow write: if isServiceAdmin();
+    }
+
+    match /alertas/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow update: if isTenantDoc() || isServiceAdmin();
+      allow create, delete: if isServiceAdmin();
+    }
+
+    match /acoesRecomendadas/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow update: if isTenantDoc() || isServiceAdmin();
+      allow create, delete: if isServiceAdmin();
+    }
+
+    match /sugestoesCompra/{docId} {
+      allow read: if isTenantDoc() || isServiceAdmin();
+      allow update: if isTenantDoc() || isServiceAdmin();
+      allow create, delete: if isServiceAdmin();
+    }
+
     match /{document=**} {
-      allow read, write: if request.time < timestamp.date(2026, 6, 4);
+      allow read, write: if false;
     }
   }
 }
