@@ -2,20 +2,1170 @@ require("dotenv").config();
 
 const cors = require("cors");
 const express = require("express");
-const routes = require("./routes");
-const {initializeFirebase} = require("./repositories/firebaseRepository");
-
-initializeFirebase();
+const admin = require("firebase-admin");
+const csv = require("csv-parser");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json({limit: "2mb"}));
-app.use(routes);
+
+const WINDOW_DAYS = 45;
+const TARGET_COVERAGE_DAYS = Number(process.env.TARGET_COVERAGE_DAYS || 30);
+const SAFETY_STOCK_DAYS = Number(process.env.SAFETY_STOCK_DAYS || 7);
+const CRITICAL_COVERAGE_DAYS = Number(process.env.CRITICAL_COVERAGE_DAYS || 3);
+const WARNING_COVERAGE_DAYS = Number(process.env.WARNING_COVERAGE_DAYS || 15);
+const OSA_TARGET_PERCENT = Number(process.env.OSA_TARGET_PERCENT || 97);
+const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";
+
+const RAW_COLLECTIONS = {
+  produtos: "produtos",
+  estoque: "estoque",
+  vendas: "vendas",
+};
+
+const OUTPUT_COLLECTIONS = {
+  indicadoresResumo: "indicadoresResumo",
+  indicadoresItens: "indicadoresItens",
+  alertas: "alertas",
+  acoesRecomendadas: "acoesRecomendadas",
+  sugestoesCompra: "sugestoesCompra",
+};
+
+const PRODUCT_ID_KEYS = ["produto_id", "id", "sku", "codigo", "cod_produto"];
+const PRODUCT_NAME_KEYS = ["produto_nome", "nome", "descricao", "descricao_produto"];
+const CATEGORY_KEYS = ["categoria", "departamento", "grupo"];
+const SUPPLIER_KEYS = ["fornecedor", "distribuidor", "supplier"];
+const BRAND_KEYS = ["marca", "brand"];
+const STOCK_QUANTITY_KEYS = ["estoque_atual", "quantidade_estoque", "quantidade", "qtd", "qtde", "saldo", "estoque"];
+const MIN_STOCK_KEYS = ["estoque_minimo", "minimo", "estoqueMinimo", "min"];
+const SALES_QUANTITY_KEYS = ["quantidade_vendida", "quantidade", "qtd", "qtde", "qty"];
+const SALES_TOTAL_KEYS = [
+  "total_vendido",
+  "valor_total",
+  "total",
+  "receita",
+  "valor",
+  "valor_venda",
+  "preco_total",
+  "vl_total",
+  "vlr_total",
+  "valor_liquido",
+  "valor_bruto",
+  "total_item",
+  "valor_item",
+  "subtotal",
+];
+const UNIT_PRICE_KEYS = ["preco_unitario", "valor_unitario", "preco", "valor_produto", "preco_venda"];
+const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco"];
+const DATE_KEYS = ["data", "data_venda", "criado_em", "created_at", "ultima_venda_em"];
+
+initializeFirebase();
+const db = admin.firestore();
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "Estoqueia Data Driven Backend",
+    methodology: "Nielsen OSA 45 dias",
+    routes: ["/health", "/debug-storage", "/import-storage-csv", "/import-and-run", "/run-analytics"],
+  });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ok: true, status: "online"});
+});
+
+app.get("/debug-storage", requireApiKey, async (req, res) => {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
+    const [files] = await getStorageBucket().getFiles({prefix});
+
+    res.json({
+      ok: true,
+      bucket: getStorageBucket().name,
+      prefix,
+      total: files.length,
+      files: files.map((file) => file.name),
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.get("/import-storage-csv", requireApiKey, async (req, res) => {
+  await handleImport(req, res, false);
+});
+
+app.post("/import-storage-csv", requireApiKey, async (req, res) => {
+  await handleImport(req, res, false);
+});
+
+app.get("/import-and-run", requireApiKey, async (req, res) => {
+  await handleImport(req, res, true);
+});
+
+app.post("/import-and-run", requireApiKey, async (req, res) => {
+  await handleImport(req, res, true);
+});
+
+app.get("/run-analytics", requireApiKey, async (req, res) => {
+  await handleAnalytics(req, res);
+});
+
+app.post("/run-analytics", requireApiKey, async (req, res) => {
+  await handleAnalytics(req, res);
+});
+
+async function handleImport(req, res, shouldRunAnalytics) {
+  try {
+    const requestedEmpresaId = getEmpresaIdFromRequest(req);
+    const importacao = await processPendingUploads(requestedEmpresaId);
+    const empresas = requestedEmpresaId ?
+      [requestedEmpresaId] :
+      [...new Set(importacao.resultados.filter((item) => item.empresaId).map((item) => item.empresaId))];
+    const analytics = [];
+
+    if (shouldRunAnalytics) {
+      for (const empresaId of empresas) {
+        analytics.push(await rebuildAnalytics(empresaId));
+      }
+    }
+
+    res.json({ok: true, importacao, analytics});
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function handleAnalytics(req, res) {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    const summary = await rebuildAnalytics(empresaId);
+    res.json({ok: true, summary});
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function processPendingUploads(empresaId = null) {
+  const bucket = getStorageBucket();
+  const prefix = empresaId ? `uploads/${empresaId}/` : "uploads/";
+  const [files] = await bucket.getFiles({prefix});
+  const resultados = [];
+
+  for (const file of files) {
+    if (file.name.endsWith("/") || !file.name.toLowerCase().endsWith(".csv")) {
+      continue;
+    }
+
+    resultados.push(await processCsvFile(bucket, file.name));
+  }
+
+  return {total: resultados.length, resultados};
+}
+
+async function processCsvFile(bucket, filePath) {
+  const fileName = path.basename(filePath);
+  const tempFilePath = path.join(os.tmpdir(), `${Date.now()}_${fileName}`);
+  let errorPath = `erro/${fileName}`;
+
+  try {
+    const fileInfo = identifyFile(filePath);
+    const collectionName = collectionForFileType(fileInfo.tipoArquivo);
+    const processedPath = `processada/${fileInfo.empresaId}/${fileInfo.fileName}`;
+    errorPath = `erro/${fileInfo.empresaId}/${fileInfo.fileName}`;
+
+    await bucket.file(filePath).download({destination: tempFilePath});
+
+    const rows = await readCsv(tempFilePath, fileInfo.empresaId);
+    await saveRows(collectionName, rows);
+    await bucket.file(filePath).move(processedPath);
+
+    return {
+      status: "processado",
+      empresaId: fileInfo.empresaId,
+      filePath,
+      destino: processedPath,
+      colecao: collectionName,
+      linhas: rows.length,
+    };
+  } catch (error) {
+    try {
+      await bucket.file(filePath).move(errorPath);
+    } catch (moveError) {
+      console.error("Erro ao mover CSV para erro:", moveError);
+    }
+
+    return {
+      status: "erro",
+      filePath,
+      destino: errorPath,
+      erro: error.message,
+    };
+  } finally {
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath);
+    }
+  }
+}
+
+function identifyFile(filePath) {
+  if (!filePath || !filePath.startsWith("uploads/")) {
+    throw new Error(`Arquivo fora de uploads/: ${filePath}`);
+  }
+
+  const parts = filePath.split("/");
+  const fileName = path.basename(filePath);
+  const nameWithoutExtension = path.basename(fileName, ".csv");
+  const match = nameWithoutExtension.match(/^(.+)_(vendas|estoque|produto|produtos)_\d{2}_\d{2}_\d{4}$/i);
+
+  if (match) {
+    return {empresaId: match[1], tipoArquivo: match[2].toLowerCase(), fileName};
+  }
+
+  if (parts.length >= 3) {
+    return {empresaId: parts[1], tipoArquivo: nameWithoutExtension.toLowerCase(), fileName};
+  }
+
+  throw new Error(`Nome de arquivo invalido: ${fileName}`);
+}
+
+function collectionForFileType(fileType) {
+  if (fileType === "produto" || fileType === "produtos") {
+    return RAW_COLLECTIONS.produtos;
+  }
+
+  if (fileType === "vendas") {
+    return RAW_COLLECTIONS.vendas;
+  }
+
+  if (fileType === "estoque") {
+    return RAW_COLLECTIONS.estoque;
+  }
+
+  throw new Error(`Tipo de arquivo invalido: ${fileType}`);
+}
+
+function readCsv(tempFilePath, empresaId) {
+  return new Promise((resolve, reject) => {
+    const rows = [];
+
+    fs.createReadStream(tempFilePath)
+      .pipe(csv({
+        separator: ",",
+        mapHeaders: ({header}) => header.trim().replace(/^\uFEFF/, ""),
+        mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
+      }))
+      .on("data", (data) => {
+        const row = {};
+
+        for (const originalKey in data) {
+          const key = originalKey.trim().replace(/^\uFEFF/, "");
+          row[key] = parseCsvValue(key, data[originalKey]);
+        }
+
+        row.empresa_id = empresaId;
+        rows.push(row);
+      })
+      .on("end", () => resolve(rows))
+      .on("error", reject);
+  });
+}
+
+async function saveRows(collectionName, rows) {
+  const writer = new BatchWriter(db);
+
+  for (const row of rows) {
+    const rawId = getRawDocumentId(collectionName, row);
+    const docId = `${safeDocId(row.empresa_id)}_${safeDocId(rawId)}`;
+    await writer.set(db.collection(collectionName).doc(docId), row);
+  }
+
+  await writer.commit();
+}
+
+function getRawDocumentId(collectionName, row) {
+  if (collectionName === RAW_COLLECTIONS.vendas) {
+    return row.venda_id || row.id || cryptoSafeId();
+  }
+
+  return firstString(row, PRODUCT_ID_KEYS, cryptoSafeId());
+}
+
+async function rebuildAnalytics(empresaId = null) {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - WINDOW_DAYS);
+
+  const [productsSnap, stockSnap, salesSnap] = await Promise.all([
+    getTenantDocs(RAW_COLLECTIONS.produtos, empresaId),
+    getTenantDocs(RAW_COLLECTIONS.estoque, empresaId),
+    getTenantDocs(RAW_COLLECTIONS.vendas, empresaId),
+  ]);
+
+  const metricsByProduct = new Map();
+
+  for (const doc of productsSnap.docs) {
+    const data = doc.data();
+    const productId = normalizeProductId(firstString(data, PRODUCT_ID_KEYS, doc.id));
+    metricsByProduct.set(productId, createMetrics(productId, data));
+  }
+
+  for (const doc of stockSnap.docs) {
+    const data = doc.data();
+    const productId = normalizeProductId(firstString(data, PRODUCT_ID_KEYS, doc.id));
+    const metrics = getOrCreateMetrics(metricsByProduct, productId, data);
+
+    metrics.estoqueAtual = firstNumber(data, STOCK_QUANTITY_KEYS, metrics.estoqueAtual);
+    metrics.estoqueMinimo = firstNumber(data, MIN_STOCK_KEYS, metrics.estoqueMinimo);
+    mergeProductIdentity(metrics, data);
+  }
+
+  let vendasProcessadas = 0;
+
+  for (const doc of salesSnap.docs) {
+    const data = doc.data();
+    const saleDate = getRecordDate(data);
+    if (saleDate && saleDate < cutoffDate) {
+      continue;
+    }
+
+    vendasProcessadas += 1;
+    const productId = normalizeProductId(firstString(data, PRODUCT_ID_KEYS, doc.id));
+    const metrics = getOrCreateMetrics(metricsByProduct, productId, data);
+    const quantity = firstNumber(data, SALES_QUANTITY_KEYS, 0);
+    const explicitTotal = firstNumber(data, SALES_TOTAL_KEYS, null);
+    const unitPrice = firstNumber(data, UNIT_PRICE_KEYS, 0);
+    const total = explicitTotal !== null ? explicitTotal : quantity * unitPrice;
+
+    metrics.vendas45d += quantity;
+    metrics.receita45d += total;
+    metrics.ultimaVendaEm = maxDate(metrics.ultimaVendaEm, saleDate);
+    mergeProductIdentity(metrics, data);
+  }
+
+  const metricsList = Array.from(metricsByProduct.values());
+  calculateNielsenMetrics(metricsList);
+
+  const alertas = buildAlerts(metricsList);
+  const sugestoesCompra = metricsList.filter((item) => item.quantidadeSugerida > 0).sort(compareBusinessPriority);
+  const acoesRecomendadas = buildRecommendedActions(metricsList);
+  const indicadoresItens = buildIndicatorItems(metricsList, alertas, acoesRecomendadas);
+  const resumo = buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRecomendadas, vendasProcessadas);
+
+  const docId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
+  await Promise.all([
+    db.collection(OUTPUT_COLLECTIONS.indicadoresResumo).doc(docId).set(resumo, {merge: true}),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.indicadoresItens, indicadoresItens, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.alertas, alertas, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.acoesRecomendadas, acoesRecomendadas, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.sugestoesCompra, sugestoesCompra.map(toPurchaseSuggestionDoc), empresaId),
+  ]);
+
+  return {
+    empresaId: empresaId || null,
+    periodoDias: WINDOW_DAYS,
+    produtosProcessados: metricsList.length,
+    vendasProcessadas,
+    indicadoresItens: indicadoresItens.length,
+    alertas: alertas.length,
+    acoesRecomendadas: acoesRecomendadas.length,
+    sugestoesCompra: sugestoesCompra.length,
+  };
+}
+
+function createMetrics(productId, data) {
+  return {
+    produtoId: productId,
+    empresaId: firstString(data, ["empresa_id", "empresaId", "tenant_id"], null),
+    sku: firstString(data, PRODUCT_ID_KEYS, productId),
+    produtoNome: firstString(data, PRODUCT_NAME_KEYS, productId),
+    categoria: firstString(data, CATEGORY_KEYS, "Sem categoria"),
+    fornecedor: firstString(data, SUPPLIER_KEYS, ""),
+    marca: firstString(data, BRAND_KEYS, ""),
+    estoqueAtual: firstNumber(data, STOCK_QUANTITY_KEYS, 0),
+    estoqueMinimo: firstNumber(data, MIN_STOCK_KEYS, 0),
+    custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
+    vendas45d: 0,
+    receita45d: 0,
+    ultimaVendaEm: getRecordDate(data),
+    giroDiario: 0,
+    coberturaDias: null,
+    estoqueAlvo: 0,
+    quantidadeSugerida: 0,
+    investimentoSugerido: 0,
+    valorParado: 0,
+    vendaPerdidaEstimada: 0,
+    disponibilidadeOsa: 100,
+    taxaRupturaSku: 0,
+    statusGiro: "sem_giro",
+    statusEstoque: "normal",
+    prioridade: "baixa",
+    prioridadeScore: 0,
+    ranking: 0,
+    abcClasse: "C",
+    percentualReceita: 0,
+    percentualAcumulado: 0,
+  };
+}
+
+function getOrCreateMetrics(metricsByProduct, productId, data) {
+  const existing = metricsByProduct.get(productId);
+  if (existing) {
+    return existing;
+  }
+
+  const metrics = createMetrics(productId, data);
+  metricsByProduct.set(productId, metrics);
+  return metrics;
+}
+
+function mergeProductIdentity(metrics, data) {
+  metrics.sku = firstString(data, PRODUCT_ID_KEYS, metrics.sku);
+  metrics.produtoNome = firstString(data, PRODUCT_NAME_KEYS, metrics.produtoNome);
+  metrics.categoria = firstString(data, CATEGORY_KEYS, metrics.categoria);
+  metrics.fornecedor = firstString(data, SUPPLIER_KEYS, metrics.fornecedor);
+  metrics.marca = firstString(data, BRAND_KEYS, metrics.marca);
+  metrics.custoUnitario = firstNumber(data, UNIT_COST_KEYS, metrics.custoUnitario);
+  metrics.estoqueMinimo = firstNumber(data, MIN_STOCK_KEYS, metrics.estoqueMinimo);
+}
+
+function calculateNielsenMetrics(metricsList) {
+  const totalRevenue = sum(metricsList, (item) => item.receita45d);
+  const sortedByRevenue = [...metricsList].sort((a, b) => b.receita45d - a.receita45d);
+  let accumulatedRevenuePercent = 0;
+
+  sortedByRevenue.forEach((item, index) => {
+    item.ranking = index + 1;
+    item.percentualReceita = totalRevenue > 0 ? (item.receita45d / totalRevenue) * 100 : 0;
+    accumulatedRevenuePercent += item.percentualReceita;
+    item.percentualAcumulado = accumulatedRevenuePercent;
+    item.abcClasse = accumulatedRevenuePercent <= 80 ? "A" : accumulatedRevenuePercent <= 95 ? "B" : "C";
+  });
+
+  for (const item of metricsList) {
+    if (item.receita45d <= 0 && item.vendas45d > 0 && item.custoUnitario > 0) {
+      item.receita45d = item.vendas45d * item.custoUnitario;
+    }
+
+    item.giroDiario = item.vendas45d / WINDOW_DAYS;
+    item.coberturaDias = item.giroDiario > 0 ? item.estoqueAtual / item.giroDiario : null;
+    item.valorParado = item.estoqueAtual * item.custoUnitario;
+    item.estoqueAlvo = Math.ceil(item.giroDiario * (TARGET_COVERAGE_DAYS + SAFETY_STOCK_DAYS));
+    item.quantidadeSugerida = Math.max(0, item.estoqueAlvo - Math.max(0, item.estoqueAtual));
+    item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
+    item.disponibilidadeOsa = item.estoqueAtual > 0 ? 100 : 0;
+    item.taxaRupturaSku = item.giroDiario > 0 && item.estoqueAtual <= 0 ? 100 : 0;
+    item.vendaPerdidaEstimada = calculateLostSales(item);
+    item.statusEstoque = calculateStockStatus(item);
+    item.statusGiro = calculateTurnoverStatus(item);
+    item.prioridadeScore = calculatePriorityScore(item);
+    item.prioridade = calculatePriority(item.prioridadeScore);
+  }
+}
+
+function calculateLostSales(item) {
+  if (item.giroDiario <= 0) {
+    return 0;
+  }
+
+  const unitValue = item.vendas45d > 0 ? item.receita45d / item.vendas45d : item.custoUnitario;
+  const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
+  const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
+  return riskDays * item.giroDiario * unitValue;
+}
+
+function calculateStockStatus(item) {
+  if (item.estoqueAtual <= 0 && item.giroDiario > 0) {
+    return "ruptura";
+  }
+
+  if (item.estoqueMinimo > 0 && item.estoqueAtual < item.estoqueMinimo) {
+    return "abaixo_minimo";
+  }
+
+  if (item.giroDiario > 0 && item.coberturaDias !== null && item.coberturaDias <= CRITICAL_COVERAGE_DAYS) {
+    return "critico";
+  }
+
+  if (item.giroDiario > 0 && item.coberturaDias !== null && item.coberturaDias <= WARNING_COVERAGE_DAYS) {
+    return "atencao";
+  }
+
+  if (item.giroDiario <= 0 && item.estoqueAtual > 0) {
+    return "sem_vendas";
+  }
+
+  return "normal";
+}
+
+function calculateTurnoverStatus(item) {
+  if (item.giroDiario <= 0) {
+    return item.estoqueAtual > 0 ? "sem_vendas" : "sem_giro";
+  }
+
+  if (item.statusEstoque === "ruptura" || item.statusEstoque === "critico") {
+    return "critico";
+  }
+
+  if (item.statusEstoque === "atencao" || item.statusEstoque === "abaixo_minimo") {
+    return "atencao";
+  }
+
+  return "saudavel";
+}
+
+function calculatePriorityScore(item) {
+  let score = 0;
+
+  if (item.abcClasse === "A") {
+    score += 35;
+  } else if (item.abcClasse === "B") {
+    score += 20;
+  } else {
+    score += 10;
+  }
+
+  if (item.statusEstoque === "ruptura") {
+    score += 45;
+  } else if (item.statusEstoque === "critico") {
+    score += 35;
+  } else if (item.statusEstoque === "abaixo_minimo" || item.statusEstoque === "atencao") {
+    score += 20;
+  } else if (item.statusEstoque === "sem_vendas") {
+    score += 15;
+  }
+
+  if (item.vendaPerdidaEstimada > 0) {
+    score += Math.min(20, Math.log10(item.vendaPerdidaEstimada + 1) * 5);
+  }
+
+  if (item.valorParado > 0 && item.statusEstoque === "sem_vendas") {
+    score += Math.min(20, Math.log10(item.valorParado + 1) * 4);
+  }
+
+  return round(Math.min(100, score));
+}
+
+function calculatePriority(score) {
+  if (score >= 80) {
+    return "critica";
+  }
+
+  if (score >= 60) {
+    return "alta";
+  }
+
+  if (score >= 35) {
+    return "media";
+  }
+
+  return "baixa";
+}
+
+function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRecomendadas, vendasProcessadas) {
+  const activeProducts = metricsList.filter((item) => item.giroDiario > 0);
+  const availableActiveProducts = activeProducts.filter((item) => item.estoqueAtual > 0);
+  const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual <= 0);
+  const totalVendas = sum(metricsList, (item) => item.receita45d);
+  const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
+  const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
+  const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
+  const giroMedio = average(activeProducts, (item) => item.giroDiario);
+  const coberturaMedia = average(activeProducts.filter((item) => item.coberturaDias !== null), (item) => item.coberturaDias);
+  const osa = activeProducts.length > 0 ? (availableActiveProducts.length / activeProducts.length) * 100 : 100;
+  const taxaRuptura = activeProducts.length > 0 ? (stockoutProducts.length / activeProducts.length) * 100 : 0;
+
+  return {
+    empresa_id: empresaId || null,
+    periodo_dias: WINDOW_DAYS,
+    metodologia: "Nielsen OSA",
+    metodologia_indicadores:
+      "Nielsen OSA 45 dias: disponibilidade em gondola, risco de ruptura, cobertura, venda perdida e acao por SKU.",
+    meta_osa: OSA_TARGET_PERCENT,
+    meta_osa_formatada: formatPercent(OSA_TARGET_PERCENT),
+    disponibilidade_osa: round(osa),
+    disponibilidade_osa_formatada: formatPercent(osa),
+    taxa_ruptura: round(taxaRuptura),
+    taxa_ruptura_formatada: formatPercent(taxaRuptura),
+    total_vendas: round(totalVendas),
+    total_vendas_formatado: formatCurrency(totalVendas),
+    giro_medio: round(giroMedio),
+    giro_medio_dias: round(coberturaMedia),
+    cobertura_media_dias: round(coberturaMedia),
+    itens_criticos: metricsList.filter((item) => item.statusEstoque === "critico" || item.statusEstoque === "ruptura").length,
+    itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
+    itens_ruptura: stockoutProducts.length,
+    alertas_pendentes: alertas.length,
+    itens_sem_vendas: itensSemVendas.length,
+    valor_parado: round(sum(itensSemVendas, (item) => item.valorParado)),
+    valor_parado_formatado: formatCurrency(sum(itensSemVendas, (item) => item.valorParado)),
+    venda_perdida_estimada: round(vendaPerdida),
+    venda_perdida_estimada_formatada: formatCurrency(vendaPerdida),
+    investimento_sugerido: round(investimento),
+    investimento_sugerido_formatado: formatCurrency(investimento),
+    acoes_recomendadas: acoesRecomendadas.length,
+    sugestoes_compra: sugestoesCompra.length,
+    reposicao_urgente: sugestoesCompra.filter((item) => item.prioridade === "critica" || item.prioridade === "alta").length,
+    produtos_processados: metricsList.length,
+    vendas_processadas: vendasProcessadas,
+    indicadores_disponiveis: [
+      "giro_medio",
+      "itens_criticos",
+      "alertas",
+      "sugestao_compra",
+      "itens_sem_vendas",
+      "acao_recomendada",
+    ],
+    atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+function buildAlerts(metricsList) {
+  const alerts = [];
+
+  for (const item of metricsList) {
+    if (["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
+      alerts.push({
+        id: `${safeDocId(item.produtoId)}_${item.statusEstoque}`,
+        empresa_id: item.empresaId || null,
+        indicador_tipo: "alertas",
+        tipo: item.statusEstoque,
+        produto_id: item.produtoId,
+        produto_nome: item.produtoNome,
+        sku: item.sku,
+        categoria: item.categoria,
+        prioridade: item.prioridade,
+        prioridade_score: round(item.prioridadeScore),
+        status: "pendente",
+        estoque_atual: round(item.estoqueAtual),
+        estoque_minimo: round(item.estoqueMinimo),
+        cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+        venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+        venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+        titulo: item.statusEstoque === "ruptura" ? "Ruptura detectada" : "Risco de ruptura",
+        descricao: getActionDescription(item),
+        criado_em: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  }
+
+  return alerts.sort(compareBusinessPriority);
+}
+
+function buildRecommendedActions(metricsList) {
+  const actions = [];
+
+  for (const item of metricsList) {
+    if (item.quantidadeSugerida > 0 && ["ruptura", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
+      actions.push(toActionDoc(item, {
+        tipo: "reposicao",
+        titulo: item.statusEstoque === "ruptura" ? "Repor agora" : "Antecipar reposicao",
+        descricao: `${round(item.quantidadeSugerida)} unidades sugeridas para recuperar cobertura.`,
+        impacto: item.vendaPerdidaEstimada > 0 ? `Evitar ${formatCurrency(item.vendaPerdidaEstimada)} em perda` : "Evitar ruptura",
+      }));
+    }
+
+    if (item.statusEstoque === "sem_vendas" && item.valorParado > 0) {
+      actions.push(toActionDoc(item, {
+        tipo: "liquidacao",
+        titulo: "Liquidar item sem venda",
+        descricao: `${round(item.estoqueAtual)} unidades sem venda nos ultimos ${WINDOW_DAYS} dias.`,
+        impacto: `${formatCurrency(item.valorParado)} em estoque parado`,
+      }));
+    }
+  }
+
+  return actions.sort(compareBusinessPriority);
+}
+
+function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
+  const items = [];
+
+  for (const item of metricsList) {
+    items.push(toIndicatorItemDoc("giro_medio", item, {
+      status: item.statusGiro,
+      valor: item.giroDiario,
+      valorFormatado: `${round(item.coberturaDias || 0)} dias`,
+      descricao: "Giro, estoque e cobertura no periodo de 45 dias",
+    }));
+
+    if (["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
+      items.push(toIndicatorItemDoc("itens_criticos", item, {
+        status: item.statusEstoque,
+        valor: item.estoqueAtual,
+        valorFormatado: `${round(item.coberturaDias || 0)} dias`,
+        descricao: getActionDescription(item),
+      }));
+    }
+
+    if (item.statusEstoque === "sem_vendas") {
+      items.push(toIndicatorItemDoc("itens_sem_vendas", item, {
+        status: "sem_vendas",
+        valor: item.valorParado,
+        valorFormatado: formatCurrency(item.valorParado),
+        descricao: `Sem venda nos ultimos ${WINDOW_DAYS} dias`,
+      }));
+    }
+
+    if (item.quantidadeSugerida > 0) {
+      items.push(toIndicatorItemDoc("sugestao_compra", item, {
+        status: item.prioridade,
+        valor: item.investimentoSugerido,
+        valorFormatado: formatCurrency(item.investimentoSugerido),
+        descricao: `${round(item.quantidadeSugerida)} unidades sugeridas`,
+      }));
+    }
+  }
+
+  return [
+    ...items,
+    ...alertas.map((item) => ({...item, indicador_tipo: "alertas"})),
+    ...acoesRecomendadas.map((item) => ({...item, indicador_tipo: "acao_recomendada"})),
+  ];
+}
+
+function toIndicatorItemDoc(indicadorTipo, item, options) {
+  return {
+    id: `${safeDocId(indicadorTipo)}_${safeDocId(item.produtoId)}`,
+    empresa_id: item.empresaId || null,
+    indicador_tipo: indicadorTipo,
+    produto_id: item.produtoId,
+    produto_nome: item.produtoNome,
+    sku: item.sku,
+    categoria: item.categoria,
+    fornecedor: item.fornecedor,
+    prioridade: item.prioridade,
+    prioridade_score: round(item.prioridadeScore),
+    status: options.status,
+    titulo: item.produtoNome,
+    descricao: options.descricao,
+    valor: round(options.valor),
+    valor_formatado: options.valorFormatado,
+    vendas_45d: round(item.vendas45d),
+    total_vendido_45d: round(item.receita45d),
+    total_vendido_45d_formatado: formatCurrency(item.receita45d),
+    giro_diario: round(item.giroDiario),
+    estoque_atual: round(item.estoqueAtual),
+    estoque_minimo: round(item.estoqueMinimo),
+    cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    quantidade_sugerida: round(item.quantidadeSugerida),
+    investimento_sugerido: round(item.investimentoSugerido),
+    investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
+    valor_parado: round(item.valorParado),
+    valor_parado_formatado: formatCurrency(item.valorParado),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    status_giro: item.statusGiro,
+    status_estoque: item.statusEstoque,
+    abc_classe: item.abcClasse,
+    ranking: item.ranking,
+    ultima_venda_em: item.ultimaVendaEm || null,
+  };
+}
+
+function toActionDoc(item, options) {
+  return {
+    id: `${safeDocId(item.produtoId)}_${safeDocId(options.tipo)}`,
+    empresa_id: item.empresaId || null,
+    produto_id: item.produtoId,
+    produto_nome: item.produtoNome,
+    sku: item.sku,
+    categoria: item.categoria,
+    fornecedor: item.fornecedor,
+    indicador_tipo: "acao_recomendada",
+    tipo: options.tipo,
+    titulo: options.titulo,
+    descricao: options.descricao,
+    impacto: options.impacto,
+    prioridade: item.prioridade,
+    prioridade_score: round(item.prioridadeScore),
+    status: "pendente",
+    valor_impacto: round(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
+    valor_impacto_formatado: formatCurrency(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
+    quantidade_sugerida: round(item.quantidadeSugerida),
+    estoque_atual: round(item.estoqueAtual),
+    cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    criado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+function toPurchaseSuggestionDoc(item) {
+  return {
+    id: `${safeDocId(item.produtoId)}_sugestao_compra`,
+    empresa_id: item.empresaId || null,
+    indicador_tipo: "sugestao_compra",
+    produto_id: item.produtoId,
+    produto_nome: item.produtoNome,
+    sku: item.sku,
+    categoria: item.categoria,
+    fornecedor: item.fornecedor,
+    prioridade: item.prioridade,
+    prioridade_score: round(item.prioridadeScore),
+    status: "pendente",
+    titulo: item.produtoNome,
+    estoque_atual: round(item.estoqueAtual),
+    estoque_minimo: round(item.estoqueMinimo),
+    estoque_alvo: round(item.estoqueAlvo),
+    cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    vendas_45d: round(item.vendas45d),
+    giro_diario: round(item.giroDiario),
+    quantidade_sugerida: round(item.quantidadeSugerida),
+    quantidade_selecionada: round(item.quantidadeSugerida),
+    custo_unitario: round(item.custoUnitario),
+    custo_unitario_formatado: formatCurrency(item.custoUnitario),
+    investimento_sugerido: round(item.investimentoSugerido),
+    investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
+    venda_perdida_estimada: round(item.vendaPerdidaEstimada),
+    venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    criado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+function getActionDescription(item) {
+  if (item.statusEstoque === "ruptura") {
+    return "Produto com venda recente e estoque zerado.";
+  }
+
+  if (item.statusEstoque === "critico") {
+    return `Cobertura menor ou igual a ${CRITICAL_COVERAGE_DAYS} dias.`;
+  }
+
+  if (item.statusEstoque === "abaixo_minimo") {
+    return "Estoque abaixo do minimo cadastrado.";
+  }
+
+  return "Acompanhar indicador.";
+}
+
+async function replaceOutputCollection(collectionName, rows, empresaId = null) {
+  const collectionRef = db.collection(collectionName);
+  const existing = empresaId ?
+    await collectionRef.where("empresa_id", "==", empresaId).get() :
+    await collectionRef.get();
+  const writer = new BatchWriter(db);
+
+  for (const doc of existing.docs) {
+    await writer.delete(doc.ref);
+  }
+
+  for (const row of rows) {
+    const rawId = row.id || row.produto_id || cryptoSafeId();
+    const tenantPrefix = empresaId ? `${safeDocId(empresaId)}_` : "";
+    await writer.set(collectionRef.doc(`${tenantPrefix}${safeDocId(rawId)}`), {
+      ...row,
+      empresa_id: empresaId || row.empresa_id || null,
+      atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  await writer.commit();
+}
+
+async function getTenantDocs(collectionName, empresaId) {
+  const collectionRef = db.collection(collectionName);
+  if (!empresaId) {
+    return collectionRef.get();
+  }
+
+  return collectionRef.where("empresa_id", "==", empresaId).get();
+}
+
+function compareBusinessPriority(a, b) {
+  const priorityDiff = (b.prioridade_score || 0) - (a.prioridade_score || 0);
+  if (priorityDiff !== 0) {
+    return priorityDiff;
+  }
+
+  return (b.venda_perdida_estimada || b.investimentoSugerido || b.valorParado || 0) -
+    (a.venda_perdida_estimada || a.investimentoSugerido || a.valorParado || 0);
+}
+
+class BatchWriter {
+  constructor(firestore) {
+    this.firestore = firestore;
+    this.batch = firestore.batch();
+    this.count = 0;
+  }
+
+  async set(ref, data) {
+    this.batch.set(ref, data, {merge: true});
+    this.count += 1;
+    await this.flushIfNeeded();
+  }
+
+  async delete(ref) {
+    this.batch.delete(ref);
+    this.count += 1;
+    await this.flushIfNeeded();
+  }
+
+  async commit() {
+    if (this.count > 0) {
+      await this.batch.commit();
+      this.batch = this.firestore.batch();
+      this.count = 0;
+    }
+  }
+
+  async flushIfNeeded() {
+    if (this.count >= 450) {
+      await this.commit();
+    }
+  }
+}
+
+function initializeFirebase() {
+  if (admin.apps.length > 0) {
+    return;
+  }
+
+  const serviceAccountBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+  if (serviceAccountBase64) {
+    const serviceAccount = JSON.parse(Buffer.from(serviceAccountBase64, "base64").toString("utf8"));
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: getStorageBucketName(serviceAccount.project_id),
+    });
+    return;
+  }
+
+  if (serviceAccountJson) {
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: getStorageBucketName(serviceAccount.project_id),
+    });
+    return;
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+    storageBucket: getStorageBucketName(),
+  });
+}
+
+function getStorageBucketName(projectId = null) {
+  const explicitBucket = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
+  if (explicitBucket) {
+    return explicitBucket;
+  }
+
+  if (projectId) {
+    return `${projectId}.firebasestorage.app`;
+  }
+
+  return DEFAULT_STORAGE_BUCKET;
+}
+
+function getStorageBucket() {
+  return admin.storage().bucket(getStorageBucketName());
+}
+
+function requireApiKey(req, res, next) {
+  const expectedKey = process.env.SUGESTION_DATA_DRIVEN_API_KEY;
+  if (!expectedKey) {
+    next();
+    return;
+  }
+
+  if (req.header("x-api-key") !== expectedKey) {
+    res.status(401).json({ok: false, error: "API key invalida."});
+    return;
+  }
+
+  next();
+}
+
+function getEmpresaIdFromRequest(req) {
+  const value = req.query.empresaId || req.query.empresa_id || req.header("x-empresa-id");
+  return value ? String(value).trim() : null;
+}
+
+function parseCsvValue(key, value) {
+  const isIdField = key === "id" || key === "produto_id" || key === "venda_id" || key.endsWith("_id");
+
+  if (typeof value === "string") {
+    value = value.trim();
+  }
+
+  if (value === "") {
+    return "";
+  }
+
+  if (value === "true") {
+    return true;
+  }
+
+  if (value === "false") {
+    return false;
+  }
+
+  if (isIdField) {
+    return String(value).trim();
+  }
+
+  if (typeof value === "string") {
+    let normalized = value.replace("R$", "").trim();
+    const hasComma = normalized.includes(",");
+    const hasDot = normalized.includes(".");
+
+    if (hasComma && hasDot && normalized.lastIndexOf(",") > normalized.lastIndexOf(".")) {
+      normalized = normalized.replace(/\./g, "").replace(",", ".");
+    } else if (hasComma && hasDot && normalized.lastIndexOf(".") > normalized.lastIndexOf(",")) {
+      normalized = normalized.replace(/,/g, "");
+    } else if (hasComma && !hasDot) {
+      normalized = normalized.replace(",", ".");
+    }
+
+    const number = Number(normalized);
+    if (Number.isFinite(number)) {
+      return number;
+    }
+  }
+
+  return value;
+}
+
+function normalizeProductId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  let text = String(value).trim();
+
+  if (text.endsWith(".0")) {
+    text = text.slice(0, -2);
+  }
+
+  if (/^0+\d+$/.test(text)) {
+    text = text.replace(/^0+/, "") || "0";
+  }
+
+  return text;
+}
+
+function firstString(data, keys, fallback = "") {
+  for (const key of keys) {
+    const value = data[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+
+  return fallback;
+}
+
+function firstNumber(data, keys, fallback = 0) {
+  for (const key of keys) {
+    const parsed = asNumber(data[key]);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function asNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const normalized = value.replace("R$", "").replace(/\./g, "").replace(",", ".").trim();
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function getRecordDate(data) {
+  for (const key of DATE_KEYS) {
+    const value = data[key];
+    const parsed = parseDateValue(value);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function parseDateValue(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value.toDate === "function") {
+    return value.toDate();
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function maxDate(currentDate, nextDate) {
+  if (!nextDate) {
+    return currentDate || null;
+  }
+
+  if (!currentDate) {
+    return nextDate;
+  }
+
+  return nextDate > currentDate ? nextDate : currentDate;
+}
+
+function sum(rows, selector) {
+  return rows.reduce((total, row) => total + selector(row), 0);
+}
+
+function average(rows, selector) {
+  return rows.length === 0 ? 0 : sum(rows, selector) / rows.length;
+}
+
+function round(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(value || 0);
+}
+
+function formatPercent(value) {
+  return `${round(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function safeDocId(value) {
+  return String(value).replace(/[\/#[\]?]/g, "_").slice(0, 1400) || cryptoSafeId();
+}
+
+function cryptoSafeId() {
+  return `doc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function sendError(res, error) {
+  console.error(error);
+  res.status(500).json({
+    ok: false,
+    error: error && error.message ? error.message : "Erro desconhecido",
+  });
+}
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
-  console.log(`SugestionDataDriven backend rodando na porta ${port}`);
+  console.log(`Estoqueia backend rodando na porta ${port}`);
 });
-
-module.exports = app;
