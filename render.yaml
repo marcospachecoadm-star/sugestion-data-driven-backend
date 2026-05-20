@@ -42,3 +42,17 @@ services:
         sync: false
       - key: FIREBASE_STORAGE_BUCKET
         sync: false
+  - type: cron
+    name: sugestion-data-driven-import-cron
+    runtime: node
+    rootDir: functions
+    schedule: "0 * * * *"
+    buildCommand: npm ci
+    startCommand: npm run cron:import-and-run
+    envVars:
+      - key: BACKEND_PUBLIC_URL
+        value: https://sugestion-data-driven.onrender.com
+      - key: CRON_EMPRESA_ID
+        value: datadriven-4816c
+      - key: SUGESTION_DATA_DRIVEN_API_KEY
+        sync: false

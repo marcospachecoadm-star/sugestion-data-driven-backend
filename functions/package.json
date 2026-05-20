@@ -5,6 +5,7 @@
                     "serve":  "firebase emulators:start --only functions",
                     "shell":  "firebase functions:shell",
                     "start":  "node server.js",
+                    "cron:import-and-run":  "node run-cron.js",
                     "deploy":  "firebase deploy --only functions",
                     "logs":  "firebase functions:log",
                     "dev":  "node server.js"
