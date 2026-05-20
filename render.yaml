@@ -26,6 +26,16 @@ services:
         value: "20000"
       - key: MAX_ITEMS_PER_INDICATOR
         value: "250"
+      - key: OUTLIER_STD_DEV_FACTOR
+        value: "3"
+      - key: OUTLIER_MEDIAN_FACTOR
+        value: "3"
+      - key: TREND_MIN_FACTOR
+        value: "0.75"
+      - key: TREND_MAX_FACTOR
+        value: "1.4"
+      - key: TREND_CONFIRMATION_THRESHOLD
+        value: "1.15"
       - key: SUGESTION_DATA_DRIVEN_API_KEY
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_BASE64

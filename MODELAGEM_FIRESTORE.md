@@ -32,6 +32,45 @@ Guardrails ativos:
 - `MAX_STOCK_ROWS_PER_ANALYTICS=5000`
 - `MAX_SALES_ROWS_PER_ANALYTICS=20000`
 - `MAX_ITEMS_PER_INDICATOR=250`
+- `OUTLIER_STD_DEV_FACTOR=3`
+- `OUTLIER_MEDIAN_FACTOR=3`
+- `TREND_MIN_FACTOR=0.75`
+- `TREND_MAX_FACTOR=1.4`
+- `TREND_CONFIRMATION_THRESHOLD=1.15`
+
+## Tratamento Nielsen de outlier e sazonalidade
+
+O backend nao usa a venda bruta de 45 dias diretamente para sugerir compra. Ele calcula uma demanda ajustada:
+
+```txt
+media_diaria_bruta_45d = vendas_45d / 45
+media_diaria_ajustada_45d = media de 45 dias com picos suavizados
+fator_tendencia = ajuste confirmado por 15d e 7d
+giro_diario_calculado = media_diaria_ajustada_45d * fator_tendencia
+```
+
+Regras:
+
+- pico diario acima de media + 3 desvios ou 3x mediana positiva vira outlier;
+- outlier isolado e nao confirmado por 15 dias marca `sazonalidade_detectada = true`;
+- 7 dias sozinho nao infla compra agressivamente;
+- tendencia alta precisa ser confirmada tambem nos 15 dias;
+- sugestao de compra usa `giro_diario_calculado`, nao a media bruta.
+
+Campos gerados nos itens:
+
+- `vendas_45d`
+- `vendas_15d`
+- `vendas_7d`
+- `media_diaria_bruta_45d`
+- `media_diaria_ajustada_45d`
+- `media_diaria_15d`
+- `media_diaria_7d`
+- `fator_tendencia`
+- `giro_diario_calculado`
+- `outlier_detectado`
+- `dias_outlier`
+- `sazonalidade_detectada`
 
 Para o FlutterFlow/Firebase funcionar como SaaS, cada usuario autenticado deve receber custom claim:
 

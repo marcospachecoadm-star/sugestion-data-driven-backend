@@ -27,6 +27,11 @@ const MAX_PRODUCTS_PER_ANALYTICS = Number(process.env.MAX_PRODUCTS_PER_ANALYTICS
 const MAX_STOCK_ROWS_PER_ANALYTICS = Number(process.env.MAX_STOCK_ROWS_PER_ANALYTICS || 5000);
 const MAX_SALES_ROWS_PER_ANALYTICS = Number(process.env.MAX_SALES_ROWS_PER_ANALYTICS || 20000);
 const MAX_ITEMS_PER_INDICATOR = Number(process.env.MAX_ITEMS_PER_INDICATOR || 250);
+const OUTLIER_STD_DEV_FACTOR = Number(process.env.OUTLIER_STD_DEV_FACTOR || 3);
+const OUTLIER_MEDIAN_FACTOR = Number(process.env.OUTLIER_MEDIAN_FACTOR || 3);
+const TREND_MIN_FACTOR = Number(process.env.TREND_MIN_FACTOR || 0.75);
+const TREND_MAX_FACTOR = Number(process.env.TREND_MAX_FACTOR || 1.4);
+const TREND_CONFIRMATION_THRESHOLD = Number(process.env.TREND_CONFIRMATION_THRESHOLD || 1.15);
 
 const RAW_COLLECTIONS = {
   produtos: "produtos",
@@ -375,9 +380,11 @@ async function rebuildAnalytics(empresaId = null) {
     const explicitTotal = firstNumber(data, SALES_TOTAL_KEYS, null);
     const unitPrice = firstNumber(data, UNIT_PRICE_KEYS, 0);
     const total = explicitTotal !== null ? explicitTotal : quantity * unitPrice;
+    const salesDateKey = formatDateKey(saleDate || new Date());
 
     metrics.vendas45d += quantity;
     metrics.receita45d += total;
+    metrics.vendasPorDia[salesDateKey] = (metrics.vendasPorDia[salesDateKey] || 0) + quantity;
     metrics.ultimaVendaEm = maxDate(metrics.ultimaVendaEm, saleDate);
     mergeProductIdentity(metrics, data);
   }
@@ -427,9 +434,20 @@ function createMetrics(productId, data) {
     estoqueMinimo: firstNumber(data, MIN_STOCK_KEYS, 0),
     custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
     vendas45d: 0,
+    vendas15d: 0,
+    vendas7d: 0,
     receita45d: 0,
+    vendasPorDia: {},
     ultimaVendaEm: getRecordDate(data),
     giroDiario: 0,
+    giroDiarioBruto: 0,
+    mediaDiariaAjustada45d: 0,
+    mediaDiaria15d: 0,
+    mediaDiaria7d: 0,
+    fatorTendencia: 1,
+    outlierDetectado: false,
+    diasOutlier: [],
+    sazonalidadeDetectada: false,
     coberturaDias: null,
     estoqueAlvo: 0,
     quantidadeSugerida: 0,
@@ -488,7 +506,18 @@ function calculateNielsenMetrics(metricsList) {
       item.receita45d = item.vendas45d * item.custoUnitario;
     }
 
-    item.giroDiario = item.vendas45d / WINDOW_DAYS;
+    const demandProfile = buildDemandProfile(item.vendasPorDia);
+    item.vendas15d = demandProfile.vendas15d;
+    item.vendas7d = demandProfile.vendas7d;
+    item.giroDiarioBruto = item.vendas45d / WINDOW_DAYS;
+    item.mediaDiariaAjustada45d = demandProfile.mediaDiariaAjustada45d;
+    item.mediaDiaria15d = demandProfile.mediaDiaria15d;
+    item.mediaDiaria7d = demandProfile.mediaDiaria7d;
+    item.fatorTendencia = demandProfile.fatorTendencia;
+    item.outlierDetectado = demandProfile.outlierDetectado;
+    item.diasOutlier = demandProfile.diasOutlier;
+    item.sazonalidadeDetectada = demandProfile.sazonalidadeDetectada;
+    item.giroDiario = demandProfile.giroDiarioCalculado;
     item.coberturaDias = item.giroDiario > 0 ? item.estoqueAtual / item.giroDiario : null;
     item.valorParado = item.estoqueAtual * item.custoUnitario;
     item.estoqueAlvo = Math.ceil(item.giroDiario * (TARGET_COVERAGE_DAYS + SAFETY_STOCK_DAYS));
@@ -513,6 +542,78 @@ function calculateLostSales(item) {
   const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
   const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
   return riskDays * item.giroDiario * unitValue;
+}
+
+function buildDemandProfile(salesByDate) {
+  const series45d = buildDailyQuantitySeries(WINDOW_DAYS, salesByDate);
+  const quantities45d = series45d.map((item) => item.quantidade);
+  const sales15d = sum(series45d.slice(-15), (item) => item.quantidade);
+  const sales7d = sum(series45d.slice(-7), (item) => item.quantidade);
+  const rawAverage45d = average(quantities45d, (value) => value);
+  const positiveQuantities = quantities45d.filter((value) => value > 0);
+  const medianPositive = median(positiveQuantities);
+  const stdDev45d = standardDeviation(quantities45d);
+  const stdDevLimit = rawAverage45d + OUTLIER_STD_DEV_FACTOR * stdDev45d;
+  const medianLimit = medianPositive > 0 ? medianPositive * OUTLIER_MEDIAN_FACTOR : stdDevLimit;
+  const outlierLimit = Math.max(medianLimit, stdDevLimit);
+  const adjustedQuantities = [];
+  const outlierDays = [];
+
+  for (const item of series45d) {
+    const isOutlier = item.quantidade > 0 && outlierLimit > 0 && item.quantidade > outlierLimit;
+    if (isOutlier) {
+      outlierDays.push({
+        data: item.data,
+        quantidade: round(item.quantidade),
+        limite: round(outlierLimit),
+      });
+      adjustedQuantities.push(outlierLimit);
+    } else {
+      adjustedQuantities.push(item.quantidade);
+    }
+  }
+
+  const adjustedAverage45d = average(adjustedQuantities, (value) => value);
+  const average15d = sales15d / 15;
+  const average7d = sales7d / 7;
+  const trendFactor = calculateTrendFactor(adjustedAverage45d, average15d, average7d);
+  const calculatedDailyTurnover = adjustedAverage45d * trendFactor;
+
+  return {
+    vendas15d: round(sales15d),
+    vendas7d: round(sales7d),
+    mediaDiariaAjustada45d: round(adjustedAverage45d),
+    mediaDiaria15d: round(average15d),
+    mediaDiaria7d: round(average7d),
+    fatorTendencia: round(trendFactor),
+    giroDiarioCalculado: round(calculatedDailyTurnover),
+    outlierDetectado: outlierDays.length > 0,
+    diasOutlier: outlierDays,
+    sazonalidadeDetectada: outlierDays.length > 0 && average15d < adjustedAverage45d * TREND_CONFIRMATION_THRESHOLD,
+  };
+}
+
+function calculateTrendFactor(adjustedAverage45d, average15d, average7d) {
+  if (adjustedAverage45d <= 0) {
+    return 1;
+  }
+
+  const factor15d = average15d / adjustedAverage45d;
+  const factor7d = average7d / adjustedAverage45d;
+
+  if (factor7d >= TREND_CONFIRMATION_THRESHOLD && factor15d >= TREND_CONFIRMATION_THRESHOLD) {
+    return clamp((factor7d * 0.4) + (factor15d * 0.6), TREND_MIN_FACTOR, TREND_MAX_FACTOR);
+  }
+
+  if (factor15d >= TREND_CONFIRMATION_THRESHOLD) {
+    return clamp(factor15d, TREND_MIN_FACTOR, TREND_MAX_FACTOR);
+  }
+
+  if (factor7d < 1 && factor15d < 1) {
+    return clamp((factor7d * 0.4) + (factor15d * 0.6), TREND_MIN_FACTOR, 1);
+  }
+
+  return 1;
 }
 
 function calculateStockStatus(item) {
@@ -612,9 +713,13 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
   const giroMedio = average(activeProducts, (item) => item.giroDiario);
+  const giroMedioBruto = average(activeProducts, (item) => item.giroDiarioBruto);
+  const giroMedioAjustado = average(activeProducts, (item) => item.mediaDiariaAjustada45d);
   const coberturaMedia = average(activeProducts.filter((item) => item.coberturaDias !== null), (item) => item.coberturaDias);
   const osa = activeProducts.length > 0 ? (availableActiveProducts.length / activeProducts.length) * 100 : 100;
   const taxaRuptura = activeProducts.length > 0 ? (stockoutProducts.length / activeProducts.length) * 100 : 0;
+  const produtosComOutlier = metricsList.filter((item) => item.outlierDetectado).length;
+  const produtosComSazonalidade = metricsList.filter((item) => item.sazonalidadeDetectada).length;
 
   return {
     empresa_id: empresaId || null,
@@ -631,6 +736,8 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     total_vendas: round(totalVendas),
     total_vendas_formatado: formatCurrency(totalVendas),
     giro_medio: round(giroMedio),
+    giro_medio_bruto: round(giroMedioBruto),
+    giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),
     cobertura_media_dias: round(coberturaMedia),
     itens_criticos: metricsList.filter((item) => item.statusEstoque === "critico" || item.statusEstoque === "ruptura").length,
@@ -642,6 +749,8 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     valor_parado_formatado: formatCurrency(sum(itensSemVendas, (item) => item.valorParado)),
     venda_perdida_estimada: round(vendaPerdida),
     venda_perdida_estimada_formatada: formatCurrency(vendaPerdida),
+    produtos_com_outlier: produtosComOutlier,
+    produtos_com_sazonalidade: produtosComSazonalidade,
     investimento_sugerido: round(investimento),
     investimento_sugerido_formatado: formatCurrency(investimento),
     acoes_recomendadas: acoesRecomendadas.length,
@@ -792,9 +901,20 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     valor: round(options.valor),
     valor_formatado: options.valorFormatado,
     vendas_45d: round(item.vendas45d),
+    vendas_15d: round(item.vendas15d),
+    vendas_7d: round(item.vendas7d),
     total_vendido_45d: round(item.receita45d),
     total_vendido_45d_formatado: formatCurrency(item.receita45d),
+    media_diaria_bruta_45d: round(item.giroDiarioBruto),
+    media_diaria_ajustada_45d: round(item.mediaDiariaAjustada45d),
+    media_diaria_15d: round(item.mediaDiaria15d),
+    media_diaria_7d: round(item.mediaDiaria7d),
+    fator_tendencia: round(item.fatorTendencia),
     giro_diario: round(item.giroDiario),
+    giro_diario_calculado: round(item.giroDiario),
+    outlier_detectado: item.outlierDetectado,
+    dias_outlier: item.diasOutlier,
+    sazonalidade_detectada: item.sazonalidadeDetectada,
     estoque_atual: round(item.estoqueAtual),
     estoque_minimo: round(item.estoqueMinimo),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
@@ -858,7 +978,18 @@ function toPurchaseSuggestionDoc(item) {
     estoque_alvo: round(item.estoqueAlvo),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     vendas_45d: round(item.vendas45d),
+    vendas_15d: round(item.vendas15d),
+    vendas_7d: round(item.vendas7d),
+    media_diaria_bruta_45d: round(item.giroDiarioBruto),
+    media_diaria_ajustada_45d: round(item.mediaDiariaAjustada45d),
+    media_diaria_15d: round(item.mediaDiaria15d),
+    media_diaria_7d: round(item.mediaDiaria7d),
+    fator_tendencia: round(item.fatorTendencia),
     giro_diario: round(item.giroDiario),
+    giro_diario_calculado: round(item.giroDiario),
+    outlier_detectado: item.outlierDetectado,
+    dias_outlier: item.diasOutlier,
+    sazonalidade_detectada: item.sazonalidadeDetectada,
     quantidade_sugerida: round(item.quantidadeSugerida),
     quantidade_selecionada: round(item.quantidadeSugerida),
     custo_unitario: round(item.custoUnitario),
@@ -1207,12 +1338,65 @@ function maxDate(currentDate, nextDate) {
   return nextDate > currentDate ? nextDate : currentDate;
 }
 
+function buildDailyQuantitySeries(days, salesByDate) {
+  const series = [];
+
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - index);
+    const key = formatDateKey(date);
+    series.push({
+      data: key,
+      quantidade: Number(salesByDate[key] || 0),
+    });
+  }
+
+  return series;
+}
+
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function sum(rows, selector) {
   return rows.reduce((total, row) => total + selector(row), 0);
 }
 
 function average(rows, selector) {
   return rows.length === 0 ? 0 : sum(rows, selector) / rows.length;
+}
+
+function median(values) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  return sorted[middle];
+}
+
+function standardDeviation(values) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const avg = average(values, (value) => value);
+  const variance = average(values, (value) => Math.pow(value - avg, 2));
+  return Math.sqrt(variance);
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function round(value) {
