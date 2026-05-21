@@ -15,7 +15,7 @@ app.use(express.json({limit: "2mb"}));
 const WINDOW_DAYS = 45;
 const TARGET_COVERAGE_DAYS = Number(process.env.TARGET_COVERAGE_DAYS || 30);
 const SAFETY_STOCK_DAYS = Number(process.env.SAFETY_STOCK_DAYS || 7);
-const CRITICAL_COVERAGE_DAYS = Number(process.env.CRITICAL_COVERAGE_DAYS || 3);
+const CRITICAL_COVERAGE_DAYS = Number(process.env.CRITICAL_COVERAGE_DAYS || 7);
 const WARNING_COVERAGE_DAYS = Number(process.env.WARNING_COVERAGE_DAYS || 15);
 const OSA_TARGET_PERCENT = Number(process.env.OSA_TARGET_PERCENT || 97);
 const DEFAULT_STORAGE_BUCKET = "datadriven-4816c.firebasestorage.app";

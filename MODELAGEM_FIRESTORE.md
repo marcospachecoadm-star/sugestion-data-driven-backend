@@ -57,6 +57,13 @@ Regras:
 - tendencia alta precisa ser confirmada tambem nos 15 dias;
 - sugestao de compra usa `giro_diario_calculado`, nao a media bruta.
 
+Regua de cobertura:
+
+- Critico: produto com giro e cobertura menor ou igual a 7 dias.
+- Atencao: produto com giro e cobertura maior que 7 e menor ou igual a 15 dias.
+- Saudavel: produto com giro e cobertura acima de 15 dias.
+- Sem venda: produto com estoque, mas sem venda no periodo analisado.
+
 Campos gerados nos itens:
 
 - `vendas_45d`
