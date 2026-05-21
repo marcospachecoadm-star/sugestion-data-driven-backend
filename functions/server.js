@@ -863,7 +863,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),
     cobertura_media_dias: round(coberturaMedia),
-    itens_criticos: metricsList.filter((item) => item.statusEstoque === "critico" || item.statusEstoque === "ruptura").length,
+    itens_criticos: metricsList.filter((item) => ["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)).length,
     itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
     itens_ruptura: stockoutProducts.length,
     alertas_pendentes: alertas.length,
