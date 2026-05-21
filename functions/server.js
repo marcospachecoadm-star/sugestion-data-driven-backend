@@ -459,6 +459,8 @@ function createMetrics(productId, data) {
     marca: firstString(data, BRAND_KEYS, ""),
     estoqueAtual: firstNumber(data, STOCK_QUANTITY_KEYS, 0),
     estoqueMinimo: firstNumber(data, MIN_STOCK_KEYS, 0),
+    estoqueMinimoOriginal: firstNumber(data, MIN_STOCK_KEYS, 0),
+    estoqueMinimoCalculado: 0,
     custoUnitario: firstNumber(data, UNIT_COST_KEYS, 0),
     vendas45d: 0,
     vendas15d: 0,
@@ -565,8 +567,13 @@ function calculateNielsenMetrics(metricsList, analysisEndDate = new Date()) {
     item.diasOutlier = demandProfile.diasOutlier;
     item.sazonalidadeDetectada = demandProfile.sazonalidadeDetectada;
     item.giroDiario = demandProfile.giroDiarioCalculado;
-    item.coberturaDias = item.giroDiario > 0 ? item.estoqueAtual / item.giroDiario : null;
-    item.valorParado = item.estoqueAtual * item.custoUnitario;
+    item.estoqueMinimoCalculado = calculateMinimumStock(item);
+    item.estoqueMinimoOriginal = item.estoqueMinimo;
+    item.estoqueMinimo = item.estoqueMinimo > 0 ?
+      item.estoqueMinimo :
+      item.estoqueMinimoCalculado;
+    item.coberturaDias = item.giroDiario > 0 ? Math.max(0, item.estoqueAtual) / item.giroDiario : null;
+    item.valorParado = Math.max(0, item.estoqueAtual) * item.custoUnitario;
     item.estoqueAlvo = Math.ceil(item.giroDiario * (TARGET_COVERAGE_DAYS + SAFETY_STOCK_DAYS));
     item.quantidadeSugerida = Math.max(0, item.estoqueAlvo - Math.max(0, item.estoqueAtual));
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
@@ -589,6 +596,14 @@ function calculateLostSales(item) {
   const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
   const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
   return riskDays * item.giroDiario * unitValue;
+}
+
+function calculateMinimumStock(item) {
+  if (item.giroDiario <= 0) {
+    return 0;
+  }
+
+  return Math.ceil(item.giroDiario * SAFETY_STOCK_DAYS);
 }
 
 function buildDemandProfile(salesByDate, analysisEndDate = new Date()) {
@@ -716,6 +731,10 @@ function turnoverStatusLabel(status) {
 }
 
 function coverageDaysLabel(item) {
+  if (item.estoqueAtual <= 0 && item.giroDiario > 0) {
+    return "Ruptura";
+  }
+
   if (item.coberturaDias !== null && item.coberturaDias !== undefined) {
     return `${round(item.coberturaDias)} dias`;
   }
@@ -893,6 +912,9 @@ function buildAlerts(metricsList) {
         status: "pendente",
         estoque_atual: round(item.estoqueAtual),
         estoque_minimo: round(item.estoqueMinimo),
+        estoque_minimo_original: round(item.estoqueMinimoOriginal),
+        estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+        estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
         cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
         cobertura_dias_formatado: coverageDaysLabel(item),
         vendas_45d: round(item.vendas45d),
@@ -1035,6 +1057,9 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     sazonalidade_detectada: item.sazonalidadeDetectada,
     estoque_atual: round(item.estoqueAtual),
     estoque_minimo: round(item.estoqueMinimo),
+    estoque_minimo_original: round(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
     quantidade_sugerida: round(item.quantidadeSugerida),
@@ -1078,6 +1103,10 @@ function toActionDoc(item, options) {
     vendas_45d_formatado: `${round(item.vendas45d)} un`,
     quantidade_sugerida: round(item.quantidadeSugerida),
     estoque_atual: round(item.estoqueAtual),
+    estoque_minimo: round(item.estoqueMinimo),
+    estoque_minimo_original: round(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
     giro_diario: round(item.giroDiario),
@@ -1105,6 +1134,9 @@ function toPurchaseSuggestionDoc(item) {
     titulo: item.produtoNome,
     estoque_atual: round(item.estoqueAtual),
     estoque_minimo: round(item.estoqueMinimo),
+    estoque_minimo_original: round(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
     estoque_alvo: round(item.estoqueAlvo),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),

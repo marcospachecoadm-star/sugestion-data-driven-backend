@@ -230,6 +230,9 @@ Campos principais:
 - `giro_45d_formatado`
 - `estoque_atual`
 - `estoque_minimo`
+- `estoque_minimo_original`
+- `estoque_minimo_calculado`
+- `estoque_minimo_origem`
 - `cobertura_dias`
 - `cobertura_dias_formatado`
 - `quantidade_sugerida`
