@@ -357,9 +357,6 @@ function getRawDocumentId(collectionName, row) {
 
 async function rebuildAnalytics(empresaId = null) {
   assertTenantScope(empresaId);
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - WINDOW_DAYS);
-
   const [productsSnap, stockSnap, salesSnap] = await Promise.all([
     getTenantDocs(RAW_COLLECTIONS.produtos, empresaId),
     getTenantDocs(RAW_COLLECTIONS.estoque, empresaId),
@@ -388,6 +385,11 @@ async function rebuildAnalytics(empresaId = null) {
     mergeProductIdentity(metrics, data);
   }
 
+  const analysisEndDate = getLatestSalesDate(salesSnap.docs) || new Date();
+  analysisEndDate.setHours(0, 0, 0, 0);
+  const cutoffDate = new Date(analysisEndDate);
+  cutoffDate.setDate(cutoffDate.getDate() - WINDOW_DAYS + 1);
+
   let vendasProcessadas = 0;
 
   for (const doc of salesSnap.docs) {
@@ -404,7 +406,7 @@ async function rebuildAnalytics(empresaId = null) {
     const explicitTotal = firstNumber(data, SALES_TOTAL_KEYS, null);
     const unitPrice = firstNumber(data, UNIT_PRICE_KEYS, 0);
     const total = explicitTotal !== null ? explicitTotal : quantity * unitPrice;
-    const salesDateKey = formatDateKey(saleDate || new Date());
+    const salesDateKey = formatDateKey(saleDate || analysisEndDate);
 
     metrics.vendas45d += quantity;
     metrics.receita45d += total;
@@ -414,7 +416,7 @@ async function rebuildAnalytics(empresaId = null) {
   }
 
   const metricsList = Array.from(metricsByProduct.values());
-  calculateNielsenMetrics(metricsList);
+  calculateNielsenMetrics(metricsList, analysisEndDate);
 
   const alertas = buildAlerts(metricsList);
   const sugestoesCompra = limitRows(
@@ -436,6 +438,7 @@ async function rebuildAnalytics(empresaId = null) {
   return {
     empresaId: empresaId || null,
     periodoDias: WINDOW_DAYS,
+    dataFinalAnalise: formatDateKey(analysisEndDate),
     produtosProcessados: metricsList.length,
     vendasProcessadas,
     indicadoresItens: indicadoresItens.length,
@@ -512,7 +515,27 @@ function mergeProductIdentity(metrics, data) {
   metrics.estoqueMinimo = firstNumber(data, MIN_STOCK_KEYS, metrics.estoqueMinimo);
 }
 
-function calculateNielsenMetrics(metricsList) {
+function getLatestSalesDate(salesDocs) {
+  let latestDate = null;
+
+  for (const doc of salesDocs) {
+    const data = normalizeRecordKeys(doc.data());
+    latestDate = maxDate(latestDate, getRecordDate(data));
+  }
+
+  return latestDate;
+}
+
+function getAnalysisEndDate(metricsList) {
+  const latestDate = metricsList.reduce(
+    (currentDate, item) => maxDate(currentDate, item.ultimaVendaEm),
+    null,
+  );
+
+  return latestDate ? formatDateKey(latestDate) : null;
+}
+
+function calculateNielsenMetrics(metricsList, analysisEndDate = new Date()) {
   const totalRevenue = sum(metricsList, (item) => item.receita45d);
   const sortedByRevenue = [...metricsList].sort((a, b) => b.receita45d - a.receita45d);
   let accumulatedRevenuePercent = 0;
@@ -530,7 +553,7 @@ function calculateNielsenMetrics(metricsList) {
       item.receita45d = item.vendas45d * item.custoUnitario;
     }
 
-    const demandProfile = buildDemandProfile(item.vendasPorDia);
+    const demandProfile = buildDemandProfile(item.vendasPorDia, analysisEndDate);
     item.vendas15d = demandProfile.vendas15d;
     item.vendas7d = demandProfile.vendas7d;
     item.giroDiarioBruto = item.vendas45d / WINDOW_DAYS;
@@ -568,8 +591,8 @@ function calculateLostSales(item) {
   return riskDays * item.giroDiario * unitValue;
 }
 
-function buildDemandProfile(salesByDate) {
-  const series45d = buildDailyQuantitySeries(WINDOW_DAYS, salesByDate);
+function buildDemandProfile(salesByDate, analysisEndDate = new Date()) {
+  const series45d = buildDailyQuantitySeries(WINDOW_DAYS, salesByDate, analysisEndDate);
   const quantities45d = series45d.map((item) => item.quantidade);
   const sales15d = sum(series45d.slice(-15), (item) => item.quantidade);
   const sales7d = sum(series45d.slice(-7), (item) => item.quantidade);
@@ -791,6 +814,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   return {
     empresa_id: empresaId || null,
     periodo_dias: WINDOW_DAYS,
+    data_final_analise: getAnalysisEndDate(metricsList),
     metodologia: "Nielsen OSA",
     metodologia_indicadores:
       "Nielsen OSA 45 dias: disponibilidade em gondola, risco de ruptura, cobertura, venda perdida e acao por SKU.",
@@ -1494,12 +1518,13 @@ function maxDate(currentDate, nextDate) {
   return nextDate > currentDate ? nextDate : currentDate;
 }
 
-function buildDailyQuantitySeries(days, salesByDate) {
+function buildDailyQuantitySeries(days, salesByDate, endDate = new Date()) {
   const series = [];
+  const anchorDate = new Date(endDate);
+  anchorDate.setHours(0, 0, 0, 0);
 
   for (let index = days - 1; index >= 0; index -= 1) {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
+    const date = new Date(anchorDate);
     date.setDate(date.getDate() - index);
     const key = formatDateKey(date);
     series.push({
