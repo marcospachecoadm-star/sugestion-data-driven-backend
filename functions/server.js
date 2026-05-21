@@ -744,6 +744,12 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const taxaRuptura = activeProducts.length > 0 ? (stockoutProducts.length / activeProducts.length) * 100 : 0;
   const produtosComOutlier = metricsList.filter((item) => item.outlierDetectado).length;
   const produtosComSazonalidade = metricsList.filter((item) => item.sazonalidadeDetectada).length;
+  const unidadesVendidas45d = sum(metricsList, (item) => item.vendas45d);
+  const giroMedio45d = giroMedio * WINDOW_DAYS;
+  const giroMedioStatus = giroMedio45d >= 5 ? "saudavel" : giroMedio45d >= 2 ? "atencao" : "baixo_giro";
+  const giroMedioStatusLabel = giroMedioStatus === "saudavel" ?
+    "Saudavel" :
+    giroMedioStatus === "atencao" ? "Atencao" : "Baixo giro";
 
   return {
     empresa_id: empresaId || null,
@@ -759,7 +765,14 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     taxa_ruptura_formatada: formatPercent(taxaRuptura),
     total_vendas: round(totalVendas),
     total_vendas_formatado: formatCurrency(totalVendas),
+    unidades_vendidas_45d: round(unidadesVendidas45d),
+    unidades_vendidas_45d_formatado: `${round(unidadesVendidas45d)} un`,
     giro_medio: round(giroMedio),
+    giro_medio_formatado: `${round(giroMedio)} un/dia por SKU`,
+    giro_medio_45d: round(giroMedio45d),
+    giro_medio_45d_formatado: `${round(giroMedio45d)} un/SKU em 45 dias`,
+    giro_medio_status: giroMedioStatus,
+    giro_medio_status_label: giroMedioStatusLabel,
     giro_medio_bruto: round(giroMedioBruto),
     giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),

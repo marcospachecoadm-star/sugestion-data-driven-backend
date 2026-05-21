@@ -153,7 +153,14 @@ Campos principais:
 - `total_vendas`
 - `total_vendas_formatado`
 - `giro_medio`
+- `giro_medio_formatado`
+- `giro_medio_45d`
+- `giro_medio_45d_formatado`
+- `giro_medio_status`
+- `giro_medio_status_label`
 - `giro_medio_dias`
+- `unidades_vendidas_45d`
+- `unidades_vendidas_45d_formatado`
 - `itens_criticos`
 - `itens_abaixo_minimo`
 - `itens_ruptura`
@@ -227,7 +234,7 @@ indicadoresResumo/{empresaId}_dashboard
 
 Cards:
 
-- Giro Medio: `giro_medio_dias`
+- Giro Medio: `giro_medio_45d_formatado`
 - Itens Criticos: `itens_criticos`
 - Alertas: `alertas_pendentes`
 - Sugestao Compra: `sugestoes_compra`
@@ -235,7 +242,7 @@ Cards:
 Resumo Geral:
 
 - Total de Vendas: `total_vendas_formatado`
-- Giro Medio: `giro_medio_dias`
+- Giro Medio: `giro_medio_45d_formatado`
 - Itens Criticos: `itens_criticos`
 - Alertas Pendentes: `alertas_pendentes`
 - Itens sem Vendas: `itens_sem_vendas`
