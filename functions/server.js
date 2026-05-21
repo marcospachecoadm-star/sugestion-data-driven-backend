@@ -1457,6 +1457,27 @@ function parseDateValue(value) {
     return value.toDate();
   }
 
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const brazilianDate = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+.*)?$/);
+
+    if (brazilianDate) {
+      const day = Number(brazilianDate[1]);
+      const month = Number(brazilianDate[2]);
+      const rawYear = Number(brazilianDate[3]);
+      const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+      const parsed = new Date(year, month - 1, day);
+
+      if (
+        parsed.getFullYear() === year &&
+        parsed.getMonth() === month - 1 &&
+        parsed.getDate() === day
+      ) {
+        return parsed;
+      }
+    }
+  }
+
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
