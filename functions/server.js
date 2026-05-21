@@ -680,6 +680,38 @@ function calculateTurnoverStatus(item) {
   return "saudavel";
 }
 
+function turnoverStatusLabel(status) {
+  const labels = {
+    saudavel: "Saudavel",
+    atencao: "Atencao",
+    critico: "Critico",
+    sem_vendas: "Sem venda",
+    sem_giro: "Sem giro",
+  };
+
+  return labels[status] || "Nao classificado";
+}
+
+function coverageDaysLabel(item) {
+  if (item.coberturaDias !== null && item.coberturaDias !== undefined) {
+    return `${round(item.coberturaDias)} dias`;
+  }
+
+  if (item.estoqueAtual > 0 && item.giroDiario <= 0) {
+    return "Sem venda no periodo";
+  }
+
+  return "Sem cobertura calculada";
+}
+
+function dailyTurnoverLabel(item) {
+  if (item.giroDiario > 0) {
+    return `${round(item.giroDiario)} un/dia`;
+  }
+
+  return "Sem giro diario";
+}
+
 function calculatePriorityScore(item) {
   let score = 0;
 
@@ -838,6 +870,16 @@ function buildAlerts(metricsList) {
         estoque_atual: round(item.estoqueAtual),
         estoque_minimo: round(item.estoqueMinimo),
         cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+        cobertura_dias_formatado: coverageDaysLabel(item),
+        vendas_45d: round(item.vendas45d),
+        vendas_45d_formatado: `${round(item.vendas45d)} un`,
+        giro_diario: round(item.giroDiario),
+        giro_diario_calculado: round(item.giroDiario),
+        giro_diario_formatado: dailyTurnoverLabel(item),
+        giro_45d: round(item.giroDiario * WINDOW_DAYS),
+        giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
+        status_giro: item.statusGiro,
+        status_giro_label: turnoverStatusLabel(item.statusGiro),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
         titulo: item.statusEstoque === "ruptura" ? "Ruptura detectada" : "Risco de ruptura",
@@ -949,6 +991,7 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     valor: round(options.valor),
     valor_formatado: options.valorFormatado,
     vendas_45d: round(item.vendas45d),
+    vendas_45d_formatado: `${round(item.vendas45d)} un`,
     vendas_15d: round(item.vendas15d),
     vendas_7d: round(item.vendas7d),
     total_vendido_45d: round(item.receita45d),
@@ -960,12 +1003,16 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     fator_tendencia: round(item.fatorTendencia),
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
+    giro_diario_formatado: dailyTurnoverLabel(item),
+    giro_45d: round(item.giroDiario * WINDOW_DAYS),
+    giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
     outlier_detectado: item.outlierDetectado,
     dias_outlier: item.diasOutlier,
     sazonalidade_detectada: item.sazonalidadeDetectada,
     estoque_atual: round(item.estoqueAtual),
     estoque_minimo: round(item.estoqueMinimo),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    cobertura_dias_formatado: coverageDaysLabel(item),
     quantidade_sugerida: round(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
@@ -974,6 +1021,7 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
     status_giro: item.statusGiro,
+    status_giro_label: turnoverStatusLabel(item.statusGiro),
     status_estoque: item.statusEstoque,
     abc_classe: item.abcClasse,
     ranking: item.ranking,
@@ -998,11 +1046,21 @@ function toActionDoc(item, options) {
     prioridade: item.prioridade,
     prioridade_score: round(item.prioridadeScore),
     status: "pendente",
+    status_giro: item.statusGiro,
+    status_giro_label: turnoverStatusLabel(item.statusGiro),
     valor_impacto: round(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
     valor_impacto_formatado: formatCurrency(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
+    vendas_45d: round(item.vendas45d),
+    vendas_45d_formatado: `${round(item.vendas45d)} un`,
     quantidade_sugerida: round(item.quantidadeSugerida),
     estoque_atual: round(item.estoqueAtual),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    cobertura_dias_formatado: coverageDaysLabel(item),
+    giro_diario: round(item.giroDiario),
+    giro_diario_calculado: round(item.giroDiario),
+    giro_diario_formatado: dailyTurnoverLabel(item),
+    giro_45d: round(item.giroDiario * WINDOW_DAYS),
+    giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
     criado_em: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
@@ -1025,7 +1083,9 @@ function toPurchaseSuggestionDoc(item) {
     estoque_minimo: round(item.estoqueMinimo),
     estoque_alvo: round(item.estoqueAlvo),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
+    cobertura_dias_formatado: coverageDaysLabel(item),
     vendas_45d: round(item.vendas45d),
+    vendas_45d_formatado: `${round(item.vendas45d)} un`,
     vendas_15d: round(item.vendas15d),
     vendas_7d: round(item.vendas7d),
     media_diaria_bruta_45d: round(item.giroDiarioBruto),
@@ -1035,6 +1095,11 @@ function toPurchaseSuggestionDoc(item) {
     fator_tendencia: round(item.fatorTendencia),
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
+    giro_diario_formatado: dailyTurnoverLabel(item),
+    giro_45d: round(item.giroDiario * WINDOW_DAYS),
+    giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
+    status_giro: item.statusGiro,
+    status_giro_label: turnoverStatusLabel(item.statusGiro),
     outlier_detectado: item.outlierDetectado,
     dias_outlier: item.diasOutlier,
     sazonalidade_detectada: item.sazonalidadeDetectada,
