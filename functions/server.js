@@ -746,10 +746,15 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const produtosComSazonalidade = metricsList.filter((item) => item.sazonalidadeDetectada).length;
   const unidadesVendidas45d = sum(metricsList, (item) => item.vendas45d);
   const giroMedio45d = giroMedio * WINDOW_DAYS;
-  const giroMedioStatus = giroMedio45d >= 5 ? "saudavel" : giroMedio45d >= 2 ? "atencao" : "baixo_giro";
+  const skusAtivos45d = metricsList.filter((item) => item.estoqueAtual > 0 || item.vendas45d > 0).length;
+  const skusComVenda45d = metricsList.filter((item) => item.vendas45d > 0).length;
+  const percentualSkusComVenda45d = skusAtivos45d > 0 ? (skusComVenda45d / skusAtivos45d) * 100 : 0;
+  const giroMedioStatus = percentualSkusComVenda45d >= 70 ?
+    "saudavel" :
+    percentualSkusComVenda45d >= 40 ? "atencao" : "critico";
   const giroMedioStatusLabel = giroMedioStatus === "saudavel" ?
     "Saudavel" :
-    giroMedioStatus === "atencao" ? "Atencao" : "Baixo giro";
+    giroMedioStatus === "atencao" ? "Atencao" : "Critico";
 
   return {
     empresa_id: empresaId || null,
@@ -767,6 +772,10 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     total_vendas_formatado: formatCurrency(totalVendas),
     unidades_vendidas_45d: round(unidadesVendidas45d),
     unidades_vendidas_45d_formatado: `${round(unidadesVendidas45d)} un`,
+    skus_ativos_45d: skusAtivos45d,
+    skus_com_venda_45d: skusComVenda45d,
+    percentual_skus_com_venda_45d: round(percentualSkusComVenda45d),
+    percentual_skus_com_venda_45d_formatado: formatPercent(percentualSkusComVenda45d),
     giro_medio: round(giroMedio45d),
     giro_medio_formatado: `${round(giroMedio45d)} un/SKU em 45 dias`,
     giro_medio_diario: round(giroMedio),

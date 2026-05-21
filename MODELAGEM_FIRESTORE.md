@@ -163,6 +163,10 @@ Campos principais:
 - `giro_medio_dias`
 - `unidades_vendidas_45d`
 - `unidades_vendidas_45d_formatado`
+- `skus_ativos_45d`
+- `skus_com_venda_45d`
+- `percentual_skus_com_venda_45d`
+- `percentual_skus_com_venda_45d_formatado`
 - `itens_criticos`
 - `itens_abaixo_minimo`
 - `itens_ruptura`
@@ -245,6 +249,7 @@ Resumo Geral:
 
 - Total de Vendas: `total_vendas_formatado`
 - Giro Medio: `giro_medio_formatado`
+- Saude do Giro: `percentual_skus_com_venda_45d_formatado` e `giro_medio_status_label`
 - Itens Criticos: `itens_criticos`
 - Alertas Pendentes: `alertas_pendentes`
 - Itens sem Vendas: `itens_sem_vendas`
