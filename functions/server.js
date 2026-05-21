@@ -754,6 +754,15 @@ function dailyTurnoverLabel(item) {
   return "Sem giro diario";
 }
 
+function salesFrequencyLabel(item) {
+  if (item.giroDiario > 0) {
+    const daysPerUnit = Math.max(1, Math.round(1 / item.giroDiario));
+    return `1 un / ${daysPerUnit} dias`;
+  }
+
+  return "Sem venda no periodo";
+}
+
 function calculatePriorityScore(item) {
   let score = 0;
 
@@ -922,6 +931,7 @@ function buildAlerts(metricsList) {
         giro_diario: round(item.giroDiario),
         giro_diario_calculado: round(item.giroDiario),
         giro_diario_formatado: dailyTurnoverLabel(item),
+        frequencia_venda_formatada: salesFrequencyLabel(item),
         giro_45d: round(item.giroDiario * WINDOW_DAYS),
         giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
         status_giro: item.statusGiro,
@@ -1050,6 +1060,7 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
     outlier_detectado: item.outlierDetectado,
@@ -1112,6 +1123,7 @@ function toActionDoc(item, options) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
     criado_em: admin.firestore.FieldValue.serverTimestamp(),
@@ -1152,6 +1164,7 @@ function toPurchaseSuggestionDoc(item) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
     status_giro: item.statusGiro,

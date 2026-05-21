@@ -226,6 +226,7 @@ Campos principais:
 - `total_vendido_45d`
 - `giro_diario`
 - `giro_diario_formatado`
+- `frequencia_venda_formatada`
 - `giro_45d`
 - `giro_45d_formatado`
 - `estoque_atual`
