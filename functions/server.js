@@ -967,7 +967,9 @@ function buildAlerts(metricsList) {
 
 function buildRecommendedActions(metricsList) {
   const actions = [];
-  const itensSemVendasTotal = metricsList.filter((item) => item.statusEstoque === "sem_vendas").length;
+  const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
+  const itensSemVendasTotal = itensSemVendas.length;
+  const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
 
   for (const item of metricsList) {
     if (item.quantidadeSugerida > 0 && ["ruptura", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
@@ -977,6 +979,7 @@ function buildRecommendedActions(metricsList) {
         descricao: `${roundUnits(item.quantidadeSugerida)} unidades sugeridas para recuperar cobertura.`,
         impacto: item.vendaPerdidaEstimada > 0 ? `Evitar ${formatCurrency(item.vendaPerdidaEstimada)} em perda` : "Evitar ruptura",
         itensSemVendasTotal,
+        valorTotalItensSemVenda,
       }));
     }
 
@@ -987,6 +990,7 @@ function buildRecommendedActions(metricsList) {
         descricao: `${roundUnits(item.estoqueAtual)} unidades sem venda nos ultimos ${WINDOW_DAYS} dias.`,
         impacto: `${formatCurrency(item.valorParado)} em estoque parado`,
         itensSemVendasTotal,
+        valorTotalItensSemVenda,
       }));
     }
   }
@@ -1131,6 +1135,8 @@ function toActionDoc(item, options) {
     status_giro_label: turnoverStatusLabel(item.statusGiro),
     total_itens_sem_venda: options.itensSemVendasTotal || 0,
     total_itens_sem_venda_formatado: `${options.itensSemVendasTotal || 0} itens`,
+    valor_total_itens_sem_venda: round(options.valorTotalItensSemVenda),
+    valor_total_itens_sem_venda_formatado: formatCurrency(options.valorTotalItensSemVenda),
     valor_impacto: round(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
     valor_impacto_formatado: formatCurrency(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
     vendas_45d: round(item.vendas45d),
