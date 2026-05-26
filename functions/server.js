@@ -46,6 +46,7 @@ const OUTPUT_COLLECTIONS = {
   alertas: "alertas",
   acoesRecomendadas: "acoesRecomendadas",
   sugestoesCompra: "sugestoesCompra",
+  historicoProcessamentos: "historicoProcessamentos",
 };
 
 const PRODUCT_ID_KEYS = [
@@ -425,17 +426,7 @@ async function rebuildAnalytics(empresaId = null) {
   const acoesRecomendadas = buildRecommendedActions(metricsList);
   const indicadoresItens = buildIndicatorItems(metricsList, alertas, acoesRecomendadas);
   const resumo = buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRecomendadas, vendasProcessadas);
-
-  const docId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
-  await Promise.all([
-    db.collection(OUTPUT_COLLECTIONS.indicadoresResumo).doc(docId).set(resumo, {merge: true}),
-    replaceOutputCollection(OUTPUT_COLLECTIONS.indicadoresItens, indicadoresItens, empresaId),
-    replaceOutputCollection(OUTPUT_COLLECTIONS.alertas, alertas, empresaId),
-    replaceOutputCollection(OUTPUT_COLLECTIONS.acoesRecomendadas, acoesRecomendadas, empresaId),
-    replaceOutputCollection(OUTPUT_COLLECTIONS.sugestoesCompra, sugestoesCompra.map(toPurchaseSuggestionDoc), empresaId),
-  ]);
-
-  return {
+  const runResult = {
     empresaId: empresaId || null,
     periodoDias: WINDOW_DAYS,
     dataFinalAnalise: formatDateKey(analysisEndDate),
@@ -446,6 +437,18 @@ async function rebuildAnalytics(empresaId = null) {
     acoesRecomendadas: acoesRecomendadas.length,
     sugestoesCompra: sugestoesCompra.length,
   };
+
+  const docId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
+  await Promise.all([
+    db.collection(OUTPUT_COLLECTIONS.indicadoresResumo).doc(docId).set(resumo, {merge: true}),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.indicadoresItens, indicadoresItens, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.alertas, alertas, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.acoesRecomendadas, acoesRecomendadas, empresaId),
+    replaceOutputCollection(OUTPUT_COLLECTIONS.sugestoesCompra, sugestoesCompra.map(toPurchaseSuggestionDoc), empresaId),
+    saveProcessingHistory(empresaId, resumo, runResult),
+  ]);
+
+  return runResult;
 }
 
 function createMetrics(productId, data) {
@@ -831,6 +834,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
+  const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
   const itensEstoqueNegativo = metricsList.filter((item) => item.estoqueAtual < 0);
   const giroMedio = average(activeProducts, (item) => item.giroDiario);
   const giroMedioBruto = average(activeProducts, (item) => item.giroDiarioBruto);
@@ -891,8 +895,10 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     itens_estoque_negativo: itensEstoqueNegativo.length,
     alertas_pendentes: alertas.length,
     itens_sem_vendas: itensSemVendas.length,
-    valor_parado: round(sum(itensSemVendas, (item) => item.valorParado)),
-    valor_parado_formatado: formatCurrency(sum(itensSemVendas, (item) => item.valorParado)),
+    valor_parado: round(valorTotalItensSemVenda),
+    valor_parado_formatado: formatCurrency(valorTotalItensSemVenda),
+    valor_total_itens_sem_venda: round(valorTotalItensSemVenda),
+    valor_total_itens_sem_venda_formatado: formatCurrency(valorTotalItensSemVenda),
     venda_perdida_estimada: round(vendaPerdida),
     venda_perdida_estimada_formatada: formatCurrency(vendaPerdida),
     produtos_com_outlier: produtosComOutlier,
@@ -1234,10 +1240,10 @@ function getActionDescription(item) {
 async function replaceOutputCollection(collectionName, rows, empresaId = null) {
   assertTenantScope(empresaId);
   const collectionRef = db.collection(collectionName);
-  const existing = await collectionRef.where("empresa_id", "==", empresaId).get();
+  const existing = await getCurrentOutputDocs(collectionRef, empresaId);
   const writer = new BatchWriter(db);
 
-  for (const doc of existing.docs) {
+  for (const doc of existing) {
     await writer.delete(doc.ref);
   }
 
@@ -1252,6 +1258,48 @@ async function replaceOutputCollection(collectionName, rows, empresaId = null) {
   }
 
   await writer.commit();
+}
+
+async function getCurrentOutputDocs(collectionRef, empresaId) {
+  const docsByPath = new Map();
+  const byTenant = await collectionRef.where("empresa_id", "==", empresaId).get();
+
+  for (const doc of byTenant.docs) {
+    docsByPath.set(doc.ref.path, doc);
+  }
+
+  if (empresaId) {
+    const tenantPrefix = `${safeDocId(empresaId)}_`;
+    const byIdPrefix = await collectionRef
+      .where(admin.firestore.FieldPath.documentId(), ">=", tenantPrefix)
+      .where(admin.firestore.FieldPath.documentId(), "<", `${tenantPrefix}\uf8ff`)
+      .get();
+
+    for (const doc of byIdPrefix.docs) {
+      docsByPath.set(doc.ref.path, doc);
+    }
+  }
+
+  return Array.from(docsByPath.values());
+}
+
+async function saveProcessingHistory(empresaId, resumo, runResult) {
+  assertTenantScope(empresaId);
+
+  if (!empresaId) {
+    return;
+  }
+
+  const processedAt = new Date();
+  const docId = `${safeDocId(empresaId)}_${formatHistoryDateKey(processedAt)}`;
+
+  await db.collection(OUTPUT_COLLECTIONS.historicoProcessamentos).doc(docId).set({
+    ...resumo,
+    empresa_id: empresaId,
+    tipo: "analytics_run",
+    resultado: runResult,
+    processado_em: admin.firestore.FieldValue.serverTimestamp(),
+  });
 }
 
 async function getTenantDocs(collectionName, empresaId) {
@@ -1617,6 +1665,16 @@ function formatDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatHistoryDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}_${hours}${minutes}${seconds}`;
 }
 
 function sum(rows, selector) {
