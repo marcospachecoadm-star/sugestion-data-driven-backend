@@ -581,7 +581,7 @@ function calculateNielsenMetrics(metricsList, analysisEndDate = new Date()) {
     item.quantidadeSugerida = Math.max(0, item.estoqueAlvo - Math.max(0, item.estoqueAtual));
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
     item.disponibilidadeOsa = item.estoqueAtual > 0 ? 100 : 0;
-    item.taxaRupturaSku = item.giroDiario > 0 && item.estoqueAtual <= 0 ? 100 : 0;
+    item.taxaRupturaSku = item.giroDiario > 0 && item.estoqueAtual === 0 ? 100 : 0;
     item.vendaPerdidaEstimada = calculateLostSales(item);
     item.statusEstoque = calculateStockStatus(item);
     item.statusGiro = calculateTurnoverStatus(item);
@@ -690,7 +690,11 @@ function calculateTrendFactor(adjustedAverage45d, average15d, average7d) {
 }
 
 function calculateStockStatus(item) {
-  if (item.estoqueAtual <= 0) {
+  if (item.estoqueAtual < 0) {
+    return "estoque_negativo";
+  }
+
+  if (item.estoqueAtual === 0) {
     return "ruptura";
   }
 
@@ -722,6 +726,10 @@ function calculateTurnoverStatus(item) {
     return "critico";
   }
 
+  if (item.statusEstoque === "estoque_negativo") {
+    return "estoque_negativo";
+  }
+
   if (item.statusEstoque === "atencao" || item.statusEstoque === "abaixo_minimo") {
     return "atencao";
   }
@@ -734,6 +742,7 @@ function turnoverStatusLabel(status) {
     saudavel: "Saudavel",
     atencao: "Atencao",
     critico: "Critico",
+    estoque_negativo: "Estoque negativo",
     sem_vendas: "Sem venda",
     sem_giro: "Sem giro",
   };
@@ -757,7 +766,11 @@ function negativeStockFields(item) {
 }
 
 function coverageDaysLabel(item) {
-  if (item.estoqueAtual <= 0 && item.giroDiario > 0) {
+  if (item.estoqueAtual < 0 && item.giroDiario > 0) {
+    return "Estoque negativo";
+  }
+
+  if (item.estoqueAtual === 0 && item.giroDiario > 0) {
     return "Ruptura";
   }
 
@@ -848,7 +861,7 @@ function calculatePriority(score) {
 function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRecomendadas, vendasProcessadas) {
   const activeProducts = metricsList.filter((item) => item.giroDiario > 0);
   const availableActiveProducts = activeProducts.filter((item) => item.estoqueAtual > 0);
-  const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual <= 0);
+  const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual === 0);
   const totalVendas = sum(metricsList, (item) => item.receita45d);
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
@@ -908,7 +921,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),
     cobertura_media_dias: round(coberturaMedia),
-    itens_criticos: metricsList.filter((item) => ["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)).length,
+    itens_criticos: metricsList.filter((item) => ["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(item.statusEstoque)).length,
     itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
     itens_ruptura: stockoutProducts.length,
     itens_estoque_negativo: itensEstoqueNegativo.length,
@@ -945,9 +958,9 @@ function buildAlerts(metricsList) {
   const alerts = [];
 
   for (const item of metricsList) {
-    const alertType = item.estoqueAtual <= 0 ? "ruptura" : item.statusEstoque;
+    const alertType = item.statusEstoque;
 
-    if (["ruptura", "critico", "abaixo_minimo"].includes(alertType)) {
+    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(alertType)) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_${alertType}`,
         empresa_id: item.empresaId || null,
@@ -981,7 +994,7 @@ function buildAlerts(metricsList) {
         status_giro_label: turnoverStatusLabel(item.statusGiro),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
-        titulo: alertType === "ruptura" ? "Ruptura detectada" : "Risco de ruptura",
+        titulo: alertTitle(alertType),
         descricao: getActionDescription({...item, statusEstoque: alertType}),
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -998,10 +1011,10 @@ function buildRecommendedActions(metricsList) {
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
 
   for (const item of metricsList) {
-    if (item.quantidadeSugerida > 0 && ["ruptura", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
+    if (item.quantidadeSugerida > 0 && ["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
       actions.push(toActionDoc(item, {
         tipo: "reposicao",
-        titulo: item.statusEstoque === "ruptura" ? "Repor agora" : "Antecipar reposicao",
+        titulo: ["ruptura", "estoque_negativo"].includes(item.statusEstoque) ? "Repor agora" : "Antecipar reposicao",
         descricao: `${roundUnits(item.quantidadeSugerida)} unidades sugeridas para recuperar cobertura.`,
         impacto: item.vendaPerdidaEstimada > 0 ? `Evitar ${formatCurrency(item.vendaPerdidaEstimada)} em perda` : "Evitar ruptura",
         itensSemVendasTotal,
@@ -1039,7 +1052,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
       descricao: "Giro, estoque e cobertura no periodo de 45 dias",
     }));
 
-    if (["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
+    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
       criticalItems.push(toIndicatorItemDoc("itens_criticos", item, {
         status: item.statusEstoque,
         valor: item.estoqueAtual,
@@ -1245,6 +1258,10 @@ function toPurchaseSuggestionDoc(item) {
 }
 
 function getActionDescription(item) {
+  if (item.statusEstoque === "estoque_negativo") {
+    return "Saldo de estoque negativo. Revisar baixa, venda ou ajuste operacional.";
+  }
+
   if (item.statusEstoque === "ruptura") {
     return "Produto com venda recente e estoque zerado.";
   }
@@ -1258,6 +1275,17 @@ function getActionDescription(item) {
   }
 
   return "Acompanhar indicador.";
+}
+
+function alertTitle(statusEstoque) {
+  const titles = {
+    estoque_negativo: "Estoque negativo",
+    ruptura: "Ruptura detectada",
+    critico: "Risco critico",
+    abaixo_minimo: "Estoque abaixo do minimo",
+  };
+
+  return titles[statusEstoque] || "Alerta de estoque";
 }
 
 async function replaceOutputCollection(collectionName, rows, empresaId = null) {
