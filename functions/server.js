@@ -595,10 +595,18 @@ function calculateLostSales(item) {
     return 0;
   }
 
-  const unitValue = item.vendas45d > 0 ? item.receita45d / item.vendas45d : item.custoUnitario;
+  const unitValue = getEstimatedUnitValue(item);
   const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
   const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
   return riskDays * item.giroDiario * unitValue;
+}
+
+function getEstimatedUnitValue(item) {
+  if (item.vendas45d > 0 && item.receita45d > 0) {
+    return item.receita45d / item.vendas45d;
+  }
+
+  return item.custoUnitario || 0;
 }
 
 function calculateMinimumStock(item) {
@@ -737,11 +745,14 @@ function negativeStockFields(item) {
   const estoqueAtual = roundUnits(item.estoqueAtual);
   const estoqueNegativo = estoqueAtual < 0;
   const quantidadeNegativa = estoqueNegativo ? Math.abs(estoqueAtual) : 0;
+  const vendaProjetadaEstoqueNegativo = quantidadeNegativa * getEstimatedUnitValue(item);
 
   return {
     estoque_negativo: estoqueNegativo,
     quantidade_estoque_negativo: quantidadeNegativa,
     quantidade_estoque_negativo_formatada: `${quantidadeNegativa} un`,
+    venda_projetada_estoque_negativo: round(vendaProjetadaEstoqueNegativo),
+    venda_projetada_estoque_negativo_formatada: formatCurrency(vendaProjetadaEstoqueNegativo),
   };
 }
 
