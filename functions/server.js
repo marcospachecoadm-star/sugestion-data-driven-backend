@@ -769,6 +769,14 @@ function dailyTurnoverLabel(item) {
   return "Sem giro diario";
 }
 
+function averageDailySalesLabel(item) {
+  if (item.giroDiario > 0) {
+    return `Venda media: ${round(item.giroDiario)} un/dia`;
+  }
+
+  return "Venda media: sem venda no periodo";
+}
+
 function salesFrequencyLabel(item) {
   if (item.giroDiario > 0) {
     const daysPerUnit = Math.max(1, Math.round(1 / item.giroDiario));
@@ -954,6 +962,7 @@ function buildAlerts(metricsList) {
         giro_diario: round(item.giroDiario),
         giro_diario_calculado: round(item.giroDiario),
         giro_diario_formatado: dailyTurnoverLabel(item),
+        venda_media_diaria_formatada: averageDailySalesLabel(item),
         frequencia_venda_formatada: salesFrequencyLabel(item),
         giro_45d: round(item.giroDiario * WINDOW_DAYS),
         giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
@@ -1090,6 +1099,7 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    venda_media_diaria_formatada: averageDailySalesLabel(item),
     frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
@@ -1159,6 +1169,7 @@ function toActionDoc(item, options) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    venda_media_diaria_formatada: averageDailySalesLabel(item),
     frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
@@ -1201,6 +1212,7 @@ function toPurchaseSuggestionDoc(item) {
     giro_diario: round(item.giroDiario),
     giro_diario_calculado: round(item.giroDiario),
     giro_diario_formatado: dailyTurnoverLabel(item),
+    venda_media_diaria_formatada: averageDailySalesLabel(item),
     frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
