@@ -679,7 +679,7 @@ function calculateTrendFactor(adjustedAverage45d, average15d, average7d) {
 }
 
 function calculateStockStatus(item) {
-  if (item.estoqueAtual <= 0 && item.giroDiario > 0) {
+  if (item.estoqueAtual <= 0) {
     return "ruptura";
   }
 
@@ -728,6 +728,18 @@ function turnoverStatusLabel(status) {
   };
 
   return labels[status] || "Nao classificado";
+}
+
+function negativeStockFields(item) {
+  const estoqueAtual = roundUnits(item.estoqueAtual);
+  const estoqueNegativo = estoqueAtual < 0;
+  const quantidadeNegativa = estoqueNegativo ? Math.abs(estoqueAtual) : 0;
+
+  return {
+    estoque_negativo: estoqueNegativo,
+    quantidade_estoque_negativo: quantidadeNegativa,
+    quantidade_estoque_negativo_formatada: `${quantidadeNegativa} un`,
+  };
 }
 
 function coverageDaysLabel(item) {
@@ -819,6 +831,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
+  const itensEstoqueNegativo = metricsList.filter((item) => item.estoqueAtual < 0);
   const giroMedio = average(activeProducts, (item) => item.giroDiario);
   const giroMedioBruto = average(activeProducts, (item) => item.giroDiarioBruto);
   const giroMedioAjustado = average(activeProducts, (item) => item.mediaDiariaAjustada45d);
@@ -875,6 +888,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     itens_criticos: metricsList.filter((item) => ["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)).length,
     itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
     itens_ruptura: stockoutProducts.length,
+    itens_estoque_negativo: itensEstoqueNegativo.length,
     alertas_pendentes: alertas.length,
     itens_sem_vendas: itensSemVendas.length,
     valor_parado: round(sum(itensSemVendas, (item) => item.valorParado)),
@@ -906,12 +920,14 @@ function buildAlerts(metricsList) {
   const alerts = [];
 
   for (const item of metricsList) {
-    if (["ruptura", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
+    const alertType = item.estoqueAtual <= 0 ? "ruptura" : item.statusEstoque;
+
+    if (["ruptura", "critico", "abaixo_minimo"].includes(alertType)) {
       alerts.push({
-        id: `${safeDocId(item.produtoId)}_${item.statusEstoque}`,
+        id: `${safeDocId(item.produtoId)}_${alertType}`,
         empresa_id: item.empresaId || null,
         indicador_tipo: "alertas",
-        tipo: item.statusEstoque,
+        tipo: alertType,
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
         sku: item.sku,
@@ -919,11 +935,12 @@ function buildAlerts(metricsList) {
         prioridade: item.prioridade,
         prioridade_score: round(item.prioridadeScore),
         status: "pendente",
-        estoque_atual: round(item.estoqueAtual),
-        estoque_minimo: round(item.estoqueMinimo),
-        estoque_minimo_original: round(item.estoqueMinimoOriginal),
-        estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+        estoque_atual: roundUnits(item.estoqueAtual),
+        estoque_minimo: roundUnits(item.estoqueMinimo),
+        estoque_minimo_original: roundUnits(item.estoqueMinimoOriginal),
+        estoque_minimo_calculado: roundUnits(item.estoqueMinimoCalculado),
         estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
+        ...negativeStockFields(item),
         cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
         cobertura_dias_formatado: coverageDaysLabel(item),
         vendas_45d: round(item.vendas45d),
@@ -938,8 +955,8 @@ function buildAlerts(metricsList) {
         status_giro_label: turnoverStatusLabel(item.statusGiro),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
-        titulo: item.statusEstoque === "ruptura" ? "Ruptura detectada" : "Risco de ruptura",
-        descricao: getActionDescription(item),
+        titulo: alertType === "ruptura" ? "Ruptura detectada" : "Risco de ruptura",
+        descricao: getActionDescription({...item, statusEstoque: alertType}),
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
@@ -950,14 +967,16 @@ function buildAlerts(metricsList) {
 
 function buildRecommendedActions(metricsList) {
   const actions = [];
+  const itensSemVendasTotal = metricsList.filter((item) => item.statusEstoque === "sem_vendas").length;
 
   for (const item of metricsList) {
     if (item.quantidadeSugerida > 0 && ["ruptura", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
       actions.push(toActionDoc(item, {
         tipo: "reposicao",
         titulo: item.statusEstoque === "ruptura" ? "Repor agora" : "Antecipar reposicao",
-        descricao: `${round(item.quantidadeSugerida)} unidades sugeridas para recuperar cobertura.`,
+        descricao: `${roundUnits(item.quantidadeSugerida)} unidades sugeridas para recuperar cobertura.`,
         impacto: item.vendaPerdidaEstimada > 0 ? `Evitar ${formatCurrency(item.vendaPerdidaEstimada)} em perda` : "Evitar ruptura",
+        itensSemVendasTotal,
       }));
     }
 
@@ -965,8 +984,9 @@ function buildRecommendedActions(metricsList) {
       actions.push(toActionDoc(item, {
         tipo: "liquidacao",
         titulo: "Liquidar item sem venda",
-        descricao: `${round(item.estoqueAtual)} unidades sem venda nos ultimos ${WINDOW_DAYS} dias.`,
+        descricao: `${roundUnits(item.estoqueAtual)} unidades sem venda nos ultimos ${WINDOW_DAYS} dias.`,
         impacto: `${formatCurrency(item.valorParado)} em estoque parado`,
+        itensSemVendasTotal,
       }));
     }
   }
@@ -1066,14 +1086,15 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     outlier_detectado: item.outlierDetectado,
     dias_outlier: item.diasOutlier,
     sazonalidade_detectada: item.sazonalidadeDetectada,
-    estoque_atual: round(item.estoqueAtual),
-    estoque_minimo: round(item.estoqueMinimo),
-    estoque_minimo_original: round(item.estoqueMinimoOriginal),
-    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    estoque_atual: roundUnits(item.estoqueAtual),
+    estoque_minimo: roundUnits(item.estoqueMinimo),
+    estoque_minimo_original: roundUnits(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: roundUnits(item.estoqueMinimoCalculado),
     estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
+    ...negativeStockFields(item),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
-    quantidade_sugerida: round(item.quantidadeSugerida),
+    quantidade_sugerida: roundUnits(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
     valor_parado: round(item.valorParado),
@@ -1108,16 +1129,19 @@ function toActionDoc(item, options) {
     status: "pendente",
     status_giro: item.statusGiro,
     status_giro_label: turnoverStatusLabel(item.statusGiro),
+    total_itens_sem_venda: options.itensSemVendasTotal || 0,
+    total_itens_sem_venda_formatado: `${options.itensSemVendasTotal || 0} itens`,
     valor_impacto: round(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
     valor_impacto_formatado: formatCurrency(item.vendaPerdidaEstimada || item.valorParado || item.investimentoSugerido),
     vendas_45d: round(item.vendas45d),
     vendas_45d_formatado: `${round(item.vendas45d)} un`,
-    quantidade_sugerida: round(item.quantidadeSugerida),
-    estoque_atual: round(item.estoqueAtual),
-    estoque_minimo: round(item.estoqueMinimo),
-    estoque_minimo_original: round(item.estoqueMinimoOriginal),
-    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    quantidade_sugerida: roundUnits(item.quantidadeSugerida),
+    estoque_atual: roundUnits(item.estoqueAtual),
+    estoque_minimo: roundUnits(item.estoqueMinimo),
+    estoque_minimo_original: roundUnits(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: roundUnits(item.estoqueMinimoCalculado),
     estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
+    ...negativeStockFields(item),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
     giro_diario: round(item.giroDiario),
@@ -1144,12 +1168,13 @@ function toPurchaseSuggestionDoc(item) {
     prioridade_score: round(item.prioridadeScore),
     status: "pendente",
     titulo: item.produtoNome,
-    estoque_atual: round(item.estoqueAtual),
-    estoque_minimo: round(item.estoqueMinimo),
-    estoque_minimo_original: round(item.estoqueMinimoOriginal),
-    estoque_minimo_calculado: round(item.estoqueMinimoCalculado),
+    estoque_atual: roundUnits(item.estoqueAtual),
+    estoque_minimo: roundUnits(item.estoqueMinimo),
+    estoque_minimo_original: roundUnits(item.estoqueMinimoOriginal),
+    estoque_minimo_calculado: roundUnits(item.estoqueMinimoCalculado),
     estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
-    estoque_alvo: round(item.estoqueAlvo),
+    estoque_alvo: roundUnits(item.estoqueAlvo),
+    ...negativeStockFields(item),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
     vendas_45d: round(item.vendas45d),
@@ -1172,8 +1197,8 @@ function toPurchaseSuggestionDoc(item) {
     outlier_detectado: item.outlierDetectado,
     dias_outlier: item.diasOutlier,
     sazonalidade_detectada: item.sazonalidadeDetectada,
-    quantidade_sugerida: round(item.quantidadeSugerida),
-    quantidade_selecionada: round(item.quantidadeSugerida),
+    quantidade_sugerida: roundUnits(item.quantidadeSugerida),
+    quantidade_selecionada: roundUnits(item.quantidadeSugerida),
     custo_unitario: round(item.custoUnitario),
     custo_unitario_formatado: formatCurrency(item.custoUnitario),
     investimento_sugerido: round(item.investimentoSugerido),
@@ -1627,6 +1652,10 @@ function clamp(value, min, max) {
 
 function round(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function roundUnits(value) {
+  return Math.round(Number(value || 0));
 }
 
 function formatCurrency(value) {
