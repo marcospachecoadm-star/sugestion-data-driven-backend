@@ -1,4 +1,10 @@
-require("dotenv").config();
+try {
+  require("dotenv").config();
+} catch (error) {
+  if (error.code !== "MODULE_NOT_FOUND") {
+    throw error;
+  }
+}
 
 const cors = require("cors");
 const express = require("express");
@@ -100,8 +106,12 @@ const UNIT_PRICE_KEYS = ["preco_unitario", "valor_unitario", "preco", "valor_pro
 const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco", "preco_de_custo"];
 const DATE_KEYS = ["data", "data_venda", "criado_em", "created_at", "ultima_venda_em"];
 
-initializeFirebase();
-const db = admin.firestore();
+let firestoreDb = null;
+const db = new Proxy({}, {
+  get(_target, property) {
+    return getDb()[property];
+  },
+});
 
 app.get("/", (_req, res) => {
   res.json({
@@ -1472,6 +1482,15 @@ function initializeFirebase() {
   });
 }
 
+function getDb() {
+  if (!firestoreDb) {
+    initializeFirebase();
+    firestoreDb = admin.firestore();
+  }
+
+  return firestoreDb;
+}
+
 function getStorageBucketName(projectId = null) {
   const explicitBucket = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
   if (explicitBucket) {
@@ -1486,6 +1505,7 @@ function getStorageBucketName(projectId = null) {
 }
 
 function getStorageBucket() {
+  initializeFirebase();
   return admin.storage().bucket(getStorageBucketName());
 }
 
