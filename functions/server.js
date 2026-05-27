@@ -1311,8 +1311,9 @@ async function replaceOutputCollection(collectionName, rows, empresaId = null) {
   for (const row of rows) {
     const rawId = row.id || row.produto_id || cryptoSafeId();
     const tenantPrefix = empresaId ? `${safeDocId(empresaId)}_` : "";
+    const rowWithSearch = addSearchText(row);
     await writer.set(collectionRef.doc(`${tenantPrefix}${safeDocId(rawId)}`), {
-      ...row,
+      ...rowWithSearch,
       empresa_id: empresaId || row.empresa_id || null,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -1342,6 +1343,42 @@ async function getCurrentOutputDocs(collectionRef, empresaId) {
   }
 
   return Array.from(docsByPath.values());
+}
+
+function addSearchText(row) {
+  return {
+    ...row,
+    busca_texto: buildSearchText(row),
+  };
+}
+
+function buildSearchText(row) {
+  return normalizeSearchText([
+    row.produto_nome,
+    row.titulo,
+    row.descricao,
+    row.sku,
+    row.produto_id,
+    row.categoria,
+    row.fornecedor,
+    row.marca,
+    row.tipo,
+    row.indicador_tipo,
+    row.status,
+    row.status_giro_label,
+    row.status_estoque,
+    row.prioridade,
+  ].filter((value) => value !== undefined && value !== null).join(" "));
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 async function saveProcessingHistory(empresaId, resumo, runResult) {
