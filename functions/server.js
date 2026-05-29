@@ -1348,12 +1348,12 @@ async function getCurrentOutputDocs(collectionRef, empresaId) {
 function addSearchText(row) {
   return {
     ...row,
-    busca_texto: buildSearchText(row),
+    busca_tokens: buildSearchTokens(row),
   };
 }
 
-function buildSearchText(row) {
-  return normalizeSearchText([
+function buildSearchTokens(row) {
+  const searchText = normalizeSearchText([
     row.produto_nome,
     row.titulo,
     row.descricao,
@@ -1369,6 +1369,8 @@ function buildSearchText(row) {
     row.status_estoque,
     row.prioridade,
   ].filter((value) => value !== undefined && value !== null).join(" "));
+
+  return tokenizeSearchText(searchText);
 }
 
 function normalizeSearchText(value) {
@@ -1379,6 +1381,26 @@ function normalizeSearchText(value) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function tokenizeSearchText(value) {
+  const tokens = new Set();
+  const words = normalizeSearchText(value).split(" ").filter(Boolean);
+
+  for (const word of words) {
+    tokens.add(word);
+
+    if (word.length <= 3) {
+      continue;
+    }
+
+    const maxPrefixLength = Math.min(word.length - 1, 12);
+    for (let length = 3; length <= maxPrefixLength; length++) {
+      tokens.add(word.slice(0, length));
+    }
+  }
+
+  return Array.from(tokens).slice(0, 200);
 }
 
 async function saveProcessingHistory(empresaId, resumo, runResult) {
