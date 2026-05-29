@@ -20,6 +20,15 @@
       ]
     },
     {
+      "collectionGroup": "indicadoresItens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "empresa_id", "order": "ASCENDING"},
+        {"fieldPath": "indicador_tipo", "order": "ASCENDING"},
+        {"fieldPath": "busca_tokens", "arrayConfig": "CONTAINS"}
+      ]
+    },
+    {
       "collectionGroup": "acoesRecomendadas",
       "queryScope": "COLLECTION",
       "fields": [

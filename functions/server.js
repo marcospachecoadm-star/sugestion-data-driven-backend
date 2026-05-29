@@ -118,7 +118,15 @@ app.get("/", (_req, res) => {
     ok: true,
     service: "Estoqueia Data Driven Backend",
     methodology: "Nielsen OSA 45 dias",
-    routes: ["/health", "/debug-storage", "/import-storage-csv", "/import-and-run", "/run-analytics"],
+    routes: [
+      "/health",
+      "/debug-storage",
+      "/import-storage-csv",
+      "/import-and-run",
+      "/run-analytics",
+      "/indicadores/itens",
+      "/search-indicadores",
+    ],
   });
 });
 
@@ -169,6 +177,14 @@ app.post("/run-analytics", requireApiKey, async (req, res) => {
   await handleAnalytics(req, res);
 });
 
+app.get("/indicadores/itens", requireApiKey, async (req, res) => {
+  await handleIndicatorItemsSearch(req, res);
+});
+
+app.get("/search-indicadores", requireApiKey, async (req, res) => {
+  await handleIndicatorItemsSearch(req, res);
+});
+
 async function handleImport(req, res, shouldRunAnalytics) {
   try {
     const requestedEmpresaId = getEmpresaIdFromRequest(req);
@@ -197,6 +213,52 @@ async function handleAnalytics(req, res) {
     assertTenantScope(empresaId);
     const summary = await rebuildAnalytics(empresaId);
     res.json({ok: true, summary});
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function handleIndicatorItemsSearch(req, res) {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    assertTenantScope(empresaId);
+
+    const indicadorTipo = String(req.query.indicadorTipo || req.query.indicador_tipo || "").trim();
+    if (!indicadorTipo) {
+      const error = new Error("indicadorTipo obrigatorio. Exemplo: ?indicadorTipo=giro_medio");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const limit = getSearchLimitFromRequest(req);
+    const rawSearch = String(req.query.q || req.query.busca || req.query.search || "").trim();
+    const searchTokens = getQuerySearchTokens(rawSearch);
+
+    let query = db.collection(OUTPUT_COLLECTIONS.indicadoresItens)
+      .where("empresa_id", "==", empresaId)
+      .where("indicador_tipo", "==", indicadorTipo);
+
+    if (searchTokens.length === 1) {
+      query = query.where("busca_tokens", "array-contains", searchTokens[0]);
+    } else if (searchTokens.length > 1) {
+      query = query.where("busca_tokens", "array-contains-any", searchTokens);
+    }
+
+    const snapshot = await query.limit(limit).get();
+    const items = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.json({
+      ok: true,
+      empresaId,
+      indicadorTipo,
+      q: rawSearch,
+      tokens: searchTokens,
+      total: items.length,
+      items,
+    });
   } catch (error) {
     sendError(res, error);
   }
@@ -1402,6 +1464,31 @@ function tokenizeSearchText(value) {
   }
 
   return Array.from(tokens).slice(0, 200);
+}
+
+function getQuerySearchTokens(value) {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const tokens = new Set();
+  const words = normalized.split(" ").filter(Boolean);
+
+  for (const word of words) {
+    tokens.add(word);
+  }
+
+  return Array.from(tokens).slice(0, 10);
+}
+
+function getSearchLimitFromRequest(req) {
+  const parsed = Number(req.query.limit || 50);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 50;
+  }
+
+  return Math.min(Math.floor(parsed), 100);
 }
 
 async function saveProcessingHistory(empresaId, resumo, runResult) {
