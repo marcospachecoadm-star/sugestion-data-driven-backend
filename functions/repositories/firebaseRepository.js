@@ -93,14 +93,74 @@ async function replaceCollection(collectionName, rows, mapper, empresaId = null)
   for (const row of rows) {
     const rawId = row.id || row.produtoId || cryptoSafeId();
     const tenantPrefix = empresaId ? `${safeDocId(empresaId)}_` : "";
+    const mappedRow = mapper(row);
     await writer.set(collectionRef.doc(`${tenantPrefix}${safeDocId(rawId)}`), {
-      ...mapper(row),
+      ...addSearchTokens(mappedRow),
       empresa_id: empresaId || row.empresaId || null,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
 
   await writer.commit();
+}
+
+function addSearchTokens(row) {
+  return {
+    ...row,
+    busca_tokens: buildSearchTokens(row),
+    busca_texto: admin.firestore.FieldValue.delete(),
+  };
+}
+
+function buildSearchTokens(row) {
+  const searchText = normalizeSearchText([
+    row.produto_nome,
+    row.titulo,
+    row.descricao,
+    row.sku,
+    row.produto_id,
+    row.categoria,
+    row.fornecedor,
+    row.marca,
+    row.tipo,
+    row.indicador_tipo,
+    row.status,
+    row.status_giro_label,
+    row.status_estoque,
+    row.prioridade,
+  ].filter((value) => value !== undefined && value !== null).join(" "));
+
+  return tokenizeSearchText(searchText);
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function tokenizeSearchText(value) {
+  const tokens = new Set();
+  const words = normalizeSearchText(value).split(" ").filter(Boolean);
+
+  for (const word of words) {
+    tokens.add(word);
+
+    if (word.length <= 3) {
+      continue;
+    }
+
+    const maxPrefixLength = Math.min(word.length - 1, 12);
+    for (let length = 3; length <= maxPrefixLength; length++) {
+      tokens.add(word.slice(0, length));
+    }
+  }
+
+  return Array.from(tokens).slice(0, 200);
 }
 
 class BatchWriter {

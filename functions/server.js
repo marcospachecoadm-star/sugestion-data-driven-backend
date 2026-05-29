@@ -1349,6 +1349,7 @@ function addSearchText(row) {
   return {
     ...row,
     busca_tokens: buildSearchTokens(row),
+    busca_texto: admin.firestore.FieldValue.delete(),
   };
 }
 
