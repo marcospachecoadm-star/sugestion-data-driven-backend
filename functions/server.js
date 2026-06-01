@@ -1051,7 +1051,7 @@ function buildAlerts(metricsList) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_${alertType}`,
         empresa_id: item.empresaId || null,
-        indicador_tipo: "alertas",
+        indicador_tipo: getIndicatorTypeForStockStatus(alertType),
         tipo: alertType,
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
@@ -1091,6 +1091,18 @@ function buildAlerts(metricsList) {
   return limitRows(alerts.sort(compareBusinessPriority));
 }
 
+function getIndicatorTypeForStockStatus(statusEstoque) {
+  if (statusEstoque === "estoque_negativo") {
+    return "estoque_negativo";
+  }
+
+  if (statusEstoque === "abaixo_minimo") {
+    return "abaixo_minimo";
+  }
+
+  return "alertas";
+}
+
 function buildRecommendedActions(metricsList) {
   const actions = [];
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
@@ -1128,8 +1140,6 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
   const items = [];
   const giroItems = [];
   const criticalItems = [];
-  const negativeStockItems = [];
-  const belowMinimumItems = [];
   const noSalesItems = [];
   const purchaseItems = [];
 
@@ -1146,24 +1156,6 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
         status: item.statusEstoque,
         valor: item.estoqueAtual,
         valorFormatado: `${round(item.coberturaDias || 0)} dias`,
-        descricao: getActionDescription(item),
-      }));
-    }
-
-    if (item.statusEstoque === "estoque_negativo") {
-      negativeStockItems.push(toIndicatorItemDoc("estoque_negativo", item, {
-        status: "estoque_negativo",
-        valor: calculateNegativeStockProjectedSale(item),
-        valorFormatado: formatCurrency(calculateNegativeStockProjectedSale(item)),
-        descricao: getActionDescription(item),
-      }));
-    }
-
-    if (item.statusEstoque === "abaixo_minimo") {
-      belowMinimumItems.push(toIndicatorItemDoc("abaixo_minimo", item, {
-        status: "abaixo_minimo",
-        valor: item.investimentoSugerido,
-        valorFormatado: formatCurrency(item.investimentoSugerido),
         descricao: getActionDescription(item),
       }));
     }
@@ -1189,14 +1181,12 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
 
   items.push(...limitRows(giroItems.sort(compareIndicatorRanking)));
   items.push(...limitRows(criticalItems.sort(compareBusinessPriority)));
-  items.push(...limitRows(negativeStockItems.sort(compareBusinessPriority)));
-  items.push(...limitRows(belowMinimumItems.sort(compareBusinessPriority)));
   items.push(...limitRows(noSalesItems.sort(compareBusinessPriority)));
   items.push(...limitRows(purchaseItems.sort(compareBusinessPriority)));
 
   return [
     ...items,
-    ...alertas.map((item) => ({...item, indicador_tipo: "alertas"})),
+    ...alertas,
     ...acoesRecomendadas.map((item) => ({...item, indicador_tipo: "acao_recomendada"})),
   ];
 }
