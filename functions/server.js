@@ -655,6 +655,7 @@ function calculateNielsenMetrics(metricsList, analysisEndDate = new Date()) {
     item.disponibilidadeOsa = item.estoqueAtual > 0 ? 100 : 0;
     item.taxaRupturaSku = item.giroDiario > 0 && item.estoqueAtual === 0 ? 100 : 0;
     item.vendaPerdidaEstimada = calculateLostSales(item);
+    item.diasSemVenda = calculateDaysSinceLastSale(item, analysisEndDate);
     item.statusEstoque = calculateStockStatus(item);
     item.statusGiro = calculateTurnoverStatus(item);
     item.prioridadeScore = calculatePriorityScore(item);
@@ -671,6 +672,19 @@ function calculateLostSales(item) {
   const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
   const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
   return riskDays * item.giroDiario * unitValue;
+}
+
+function calculateDaysSinceLastSale(item, analysisEndDate) {
+  if (!item.ultimaVendaEm) {
+    return null;
+  }
+
+  const endDate = new Date(analysisEndDate);
+  const lastSaleDate = new Date(item.ultimaVendaEm);
+  endDate.setHours(0, 0, 0, 0);
+  lastSaleDate.setHours(0, 0, 0, 0);
+
+  return Math.max(0, Math.floor((endDate.getTime() - lastSaleDate.getTime()) / 86400000));
 }
 
 function getEstimatedUnitValue(item) {
@@ -1249,7 +1263,10 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     status_estoque: item.statusEstoque,
     abc_classe: item.abcClasse,
     ranking: item.ranking,
+    dias_sem_venda: item.diasSemVenda,
+    dias_sem_venda_formatado: formatDaysWithoutSale(item.diasSemVenda),
     ultima_venda_em: item.ultimaVendaEm || null,
+    ultima_venda_em_formatada: formatDateForDisplay(item.ultimaVendaEm),
   };
 }
 
@@ -1984,6 +2001,24 @@ function formatPercent(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })}%`;
+}
+
+function formatDaysWithoutSale(value) {
+  if (value === null || value === undefined) {
+    return "Sem venda registrada";
+  }
+
+  const days = roundUnits(value);
+  return days === 1 ? "1 dia sem venda" : `${days} dias sem venda`;
+}
+
+function formatDateForDisplay(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("pt-BR").format(date);
 }
 
 function safeDocId(value) {
