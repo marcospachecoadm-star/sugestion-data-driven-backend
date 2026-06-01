@@ -1095,6 +1095,7 @@ function buildAlerts(metricsList) {
         status_giro_label: turnoverStatusLabel(item.statusGiro),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+        ...lastSaleFields(item),
         titulo: alertTitle(alertType),
         descricao: getActionDescription({...item, statusEstoque: alertType}),
         criado_em: admin.firestore.FieldValue.serverTimestamp(),
@@ -1263,6 +1264,12 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     status_estoque: item.statusEstoque,
     abc_classe: item.abcClasse,
     ranking: item.ranking,
+    ...lastSaleFields(item),
+  };
+}
+
+function lastSaleFields(item) {
+  return {
     dias_sem_venda: item.diasSemVenda,
     dias_sem_venda_formatado: formatDaysWithoutSale(item.diasSemVenda),
     ultima_venda_em: item.ultimaVendaEm || null,
@@ -1313,6 +1320,7 @@ function toActionDoc(item, options) {
     frequencia_venda_formatada: salesFrequencyLabel(item),
     giro_45d: round(item.giroDiario * WINDOW_DAYS),
     giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
+    ...lastSaleFields(item),
     criado_em: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
@@ -1369,6 +1377,7 @@ function toPurchaseSuggestionDoc(item) {
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    ...lastSaleFields(item),
     criado_em: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
