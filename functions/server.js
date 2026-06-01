@@ -940,6 +940,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
   const itensEstoqueNegativo = metricsList.filter((item) => item.estoqueAtual < 0);
+  const valorTotalItensEstoqueNegativo = sum(itensEstoqueNegativo, (item) => item.valorParado);
   const giroMedio = average(activeProducts, (item) => item.giroDiario);
   const giroMedioBruto = average(activeProducts, (item) => item.giroDiarioBruto);
   const giroMedioAjustado = average(activeProducts, (item) => item.mediaDiariaAjustada45d);
@@ -997,6 +998,8 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
     itens_ruptura: stockoutProducts.length,
     itens_estoque_negativo: itensEstoqueNegativo.length,
+    valor_total_itens_estoque_negativo: round(valorTotalItensEstoqueNegativo),
+    valor_total_itens_estoque_negativo_formatado: formatCurrency(valorTotalItensEstoqueNegativo),
     alertas_pendentes: alertas.length,
     itens_sem_vendas: itensSemVendas.length,
     valor_parado: round(valorTotalItensSemVenda),
