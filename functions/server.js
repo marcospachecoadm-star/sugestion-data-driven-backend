@@ -232,7 +232,7 @@ async function handleIndicatorItemsSearch(req, res) {
 
     const limit = getSearchLimitFromRequest(req);
     const rawSearch = String(req.query.q || req.query.busca || req.query.search || "").trim();
-    const searchTokens = getQuerySearchTokens(rawSearch);
+    const searchTokens = isSearchAllQuery(rawSearch) ? [] : getQuerySearchTokens(rawSearch);
 
     let query = db.collection(OUTPUT_COLLECTIONS.indicadoresItens)
       .where("empresa_id", "==", empresaId)
@@ -1480,6 +1480,11 @@ function getQuerySearchTokens(value) {
   }
 
   return Array.from(tokens).slice(0, 10);
+}
+
+function isSearchAllQuery(value) {
+  const normalized = normalizeSearchText(value);
+  return ["", "__todos__", "todos", "all", "*"].includes(normalized) || String(value || "").trim() === "*";
 }
 
 function getSearchLimitFromRequest(req) {
