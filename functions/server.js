@@ -826,7 +826,7 @@ function negativeStockFields(item) {
   const estoqueAtual = roundUnits(item.estoqueAtual);
   const estoqueNegativo = estoqueAtual < 0;
   const quantidadeNegativa = estoqueNegativo ? Math.abs(estoqueAtual) : 0;
-  const vendaProjetadaEstoqueNegativo = quantidadeNegativa * getEstimatedUnitValue(item);
+  const vendaProjetadaEstoqueNegativo = calculateNegativeStockProjectedSale(item);
 
   return {
     estoque_negativo: estoqueNegativo,
@@ -835,6 +835,12 @@ function negativeStockFields(item) {
     venda_projetada_estoque_negativo: round(vendaProjetadaEstoqueNegativo),
     venda_projetada_estoque_negativo_formatada: formatCurrency(vendaProjetadaEstoqueNegativo),
   };
+}
+
+function calculateNegativeStockProjectedSale(item) {
+  const estoqueAtual = roundUnits(item.estoqueAtual);
+  const quantidadeNegativa = estoqueAtual < 0 ? Math.abs(estoqueAtual) : 0;
+  return quantidadeNegativa * getEstimatedUnitValue(item);
 }
 
 function coverageDaysLabel(item) {
@@ -940,7 +946,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
   const itensEstoqueNegativo = metricsList.filter((item) => item.estoqueAtual < 0);
-  const valorTotalItensEstoqueNegativo = sum(itensEstoqueNegativo, (item) => item.valorParado);
+  const valorTotalItensEstoqueNegativo = sum(itensEstoqueNegativo, calculateNegativeStockProjectedSale);
   const giroMedio = average(activeProducts, (item) => item.giroDiario);
   const giroMedioBruto = average(activeProducts, (item) => item.giroDiarioBruto);
   const giroMedioAjustado = average(activeProducts, (item) => item.mediaDiariaAjustada45d);
@@ -1000,6 +1006,10 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     itens_estoque_negativo: itensEstoqueNegativo.length,
     valor_total_itens_estoque_negativo: round(valorTotalItensEstoqueNegativo),
     valor_total_itens_estoque_negativo_formatado: formatCurrency(valorTotalItensEstoqueNegativo),
+    venda_projetada_estoque_negativo: round(valorTotalItensEstoqueNegativo),
+    venda_projetada_estoque_negativo_formatada: formatCurrency(valorTotalItensEstoqueNegativo),
+    perda_estimada_estoque_negativo: round(valorTotalItensEstoqueNegativo),
+    perda_estimada_estoque_negativo_formatada: formatCurrency(valorTotalItensEstoqueNegativo),
     alertas_pendentes: alertas.length,
     itens_sem_vendas: itensSemVendas.length,
     valor_parado: round(valorTotalItensSemVenda),
