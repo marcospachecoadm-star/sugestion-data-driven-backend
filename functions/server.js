@@ -1014,6 +1014,10 @@ function countByAbc(items, classe) {
   return items.filter((item) => item.abcClasse === classe || item.abc_classe === classe).length;
 }
 
+function filterByAbc(items, classe) {
+  return items.filter((item) => item.abcClasse === classe || item.abc_classe === classe);
+}
+
 function getAbcPriority(item) {
   const classe = item.abcClasse || item.abc_classe || "C";
   if (classe === "A") {
@@ -1033,6 +1037,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual <= 0);
   const totalVendas = sum(metricsList, (item) => item.receita45d);
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
+  const perdaRuptura = sum(stockoutProducts, (item) => item.vendaPerdidaEstimada);
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
@@ -1119,6 +1124,16 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     valor_total_itens_sem_venda_formatado: formatCurrency(valorTotalItensSemVenda),
     venda_perdida_estimada: round(vendaPerdida),
     venda_perdida_estimada_formatada: formatCurrency(vendaPerdida),
+    perda_ruptura: round(perdaRuptura),
+    perda_ruptura_formatada: formatCurrency(perdaRuptura),
+    valor_perda_ruptura: round(perdaRuptura),
+    valor_perda_ruptura_formatado: formatCurrency(perdaRuptura),
+    perda_ruptura_classe_a: round(sum(filterByAbc(stockoutProducts, "A"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_a_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "A"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_b: round(sum(filterByAbc(stockoutProducts, "B"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_b_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "B"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_c: round(sum(filterByAbc(stockoutProducts, "C"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_c_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "C"), (item) => item.vendaPerdidaEstimada)),
     produtos_com_outlier: produtosComOutlier,
     produtos_com_sazonalidade: produtosComSazonalidade,
     investimento_sugerido: round(investimento),
