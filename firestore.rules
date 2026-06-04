@@ -26,10 +26,24 @@ service cloud.firestore {
       return signedIn() && request.auth.token.admin == true;
     }
 
+    function isChangingProtectedUserFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        "empresa_id",
+        "empresaId",
+        "tenant_id",
+        "admin",
+        "role",
+        "roles",
+        "permissoes",
+        "plano"
+      ]);
+    }
+
     match /usuarios/{userId} {
       allow read: if signedIn() && (request.auth.uid == userId || isServiceAdmin());
       allow create: if signedIn() && request.auth.uid == userId;
-      allow update: if signedIn() && request.auth.uid == userId;
+      allow update: if isServiceAdmin() ||
+        (signedIn() && request.auth.uid == userId && !isChangingProtectedUserFields());
       allow delete: if isServiceAdmin();
     }
 
