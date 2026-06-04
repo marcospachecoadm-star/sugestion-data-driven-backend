@@ -244,11 +244,14 @@ async function handleIndicatorItemsSearch(req, res) {
       query = query.where("busca_tokens", "array-contains-any", searchTokens);
     }
 
-    const snapshot = await query.limit(limit).get();
-    const items = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
+    const snapshot = await query.get();
+    const items = snapshot.docs
+      .map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }))
+      .sort(compareApiIndicatorItem)
+      .slice(0, limit);
 
     res.json({
       ok: true,
@@ -1763,6 +1766,14 @@ function compareBusinessPriority(a, b) {
 
   return (b.venda_perdida_estimada || b.investimentoSugerido || b.investimento_sugerido || b.valorParado || b.valor_parado || 0) -
     (a.venda_perdida_estimada || a.investimentoSugerido || a.investimento_sugerido || a.valorParado || a.valor_parado || 0);
+}
+
+function compareApiIndicatorItem(a, b) {
+  if (a.indicador_tipo === "giro_medio" && b.indicador_tipo === "giro_medio") {
+    return compareIndicatorRanking(a, b);
+  }
+
+  return compareBusinessPriority(a, b);
 }
 
 function getAbcSortScore(item) {
