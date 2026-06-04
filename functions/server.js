@@ -1157,6 +1157,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
       "giro_medio",
       "itens_criticos",
       "estoque_negativo",
+      "ruptura",
       "abaixo_minimo",
       "alertas",
       "sugestao_compra",
@@ -1334,6 +1335,8 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
   const items = [];
   const giroItems = [];
   const criticalItems = [];
+  const negativeStockItems = [];
+  const ruptureItems = [];
   const noSalesItems = [];
   const purchaseItems = [];
 
@@ -1350,6 +1353,24 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
         status: item.statusEstoque,
         valor: item.estoqueAtual,
         valorFormatado: `${round(item.coberturaDias || 0)} dias`,
+        descricao: getActionDescription(item),
+      }));
+    }
+
+    if (item.statusEstoque === "estoque_negativo") {
+      negativeStockItems.push(toIndicatorItemDoc("estoque_negativo", item, {
+        status: "estoque_negativo",
+        valor: item.estoqueAtual,
+        valorFormatado: `${roundUnits(item.estoqueAtual)} un`,
+        descricao: getActionDescription(item),
+      }));
+    }
+
+    if (item.statusEstoque === "ruptura") {
+      ruptureItems.push(toIndicatorItemDoc("ruptura", item, {
+        status: "ruptura",
+        valor: item.vendaPerdidaEstimada,
+        valorFormatado: formatCurrency(item.vendaPerdidaEstimada),
         descricao: getActionDescription(item),
       }));
     }
@@ -1375,6 +1396,8 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
 
   items.push(...limitRows(giroItems.sort(compareIndicatorRanking)));
   items.push(...limitRows(criticalItems.sort(compareBusinessPriority)));
+  items.push(...limitRows(negativeStockItems.sort(compareBusinessPriority)));
+  items.push(...limitRows(ruptureItems.sort(compareBusinessPriority)));
   items.push(...limitRows(noSalesItems.sort(compareBusinessPriority)));
   items.push(...limitRows(purchaseItems.sort(compareBusinessPriority)));
 
