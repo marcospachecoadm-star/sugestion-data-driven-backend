@@ -654,7 +654,10 @@ function calculateNielsenMetrics(metricsList, analysisEndDate = new Date()) {
       item.estoqueMinimoCalculado;
     item.coberturaDias = item.giroDiario > 0 ? Math.max(0, item.estoqueAtual) / item.giroDiario : null;
     item.valorParado = Math.max(0, item.estoqueAtual) * getEstimatedUnitValue(item);
-    item.estoqueAlvo = Math.ceil(item.giroDiario * (TARGET_COVERAGE_DAYS + SAFETY_STOCK_DAYS));
+    const abcPolicy = getAbcCoveragePolicy(item);
+    item.coberturaAlvoDias = abcPolicy.coverageDays;
+    item.estoqueSegurancaDias = abcPolicy.safetyDays;
+    item.estoqueAlvo = Math.ceil(item.giroDiario * abcPolicy.totalDays);
     item.quantidadeSugerida = Math.max(0, item.estoqueAlvo - Math.max(0, item.estoqueAtual));
     item.investimentoSugerido = item.quantidadeSugerida * item.custoUnitario;
     item.disponibilidadeOsa = item.estoqueAtual > 0 ? 100 : 0;
@@ -675,7 +678,7 @@ function calculateLostSales(item) {
 
   const unitValue = getEstimatedUnitValue(item);
   const coverage = item.coberturaDias === null ? 0 : item.coberturaDias;
-  const riskDays = Math.max(0, SAFETY_STOCK_DAYS - coverage);
+  const riskDays = Math.max(0, getAbcCoveragePolicy(item).safetyDays - coverage);
   return riskDays * item.giroDiario * unitValue;
 }
 
@@ -705,7 +708,33 @@ function calculateMinimumStock(item) {
     return 0;
   }
 
-  return Math.ceil(item.giroDiario * SAFETY_STOCK_DAYS);
+  return Math.ceil(item.giroDiario * getAbcCoveragePolicy(item).safetyDays);
+}
+
+function getAbcCoveragePolicy(item) {
+  const classe = item.abcClasse || item.abc_classe || "C";
+
+  if (classe === "A") {
+    return {
+      coverageDays: Number(process.env.ABC_A_COVERAGE_DAYS || 15),
+      safetyDays: Number(process.env.ABC_A_SAFETY_DAYS || 5),
+      totalDays: Number(process.env.ABC_A_COVERAGE_DAYS || 15) + Number(process.env.ABC_A_SAFETY_DAYS || 5),
+    };
+  }
+
+  if (classe === "B") {
+    return {
+      coverageDays: Number(process.env.ABC_B_COVERAGE_DAYS || 10),
+      safetyDays: Number(process.env.ABC_B_SAFETY_DAYS || 3),
+      totalDays: Number(process.env.ABC_B_COVERAGE_DAYS || 10) + Number(process.env.ABC_B_SAFETY_DAYS || 3),
+    };
+  }
+
+  return {
+    coverageDays: Number(process.env.ABC_C_COVERAGE_DAYS || 7),
+    safetyDays: Number(process.env.ABC_C_SAFETY_DAYS || 2),
+    totalDays: Number(process.env.ABC_C_COVERAGE_DAYS || 7) + Number(process.env.ABC_C_SAFETY_DAYS || 2),
+  };
 }
 
 function buildDemandProfile(salesByDate, analysisEndDate = new Date()) {
@@ -1388,6 +1417,8 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     ...negativeStockFields(item),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
+    cobertura_alvo_dias: round(item.coberturaAlvoDias || 0),
+    estoque_seguranca_dias: round(item.estoqueSegurancaDias || 0),
     quantidade_sugerida: roundUnits(item.quantidadeSugerida),
     investimento_sugerido: round(item.investimentoSugerido),
     investimento_sugerido_formatado: formatCurrency(item.investimentoSugerido),
@@ -1517,6 +1548,8 @@ function toPurchaseSuggestionDoc(item) {
     estoque_minimo_calculado: roundUnits(item.estoqueMinimoCalculado),
     estoque_minimo_origem: item.estoqueMinimoOriginal > 0 ? "importado" : "calculado",
     estoque_alvo: roundUnits(item.estoqueAlvo),
+    cobertura_alvo_dias: round(item.coberturaAlvoDias || 0),
+    estoque_seguranca_dias: round(item.estoqueSegurancaDias || 0),
     ...negativeStockFields(item),
     cobertura_dias: item.coberturaDias === null ? null : round(item.coberturaDias),
     cobertura_dias_formatado: coverageDaysLabel(item),
