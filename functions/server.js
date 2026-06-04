@@ -185,6 +185,18 @@ app.get("/search-indicadores", requireApiKey, async (req, res) => {
   await handleIndicatorItemsSearch(req, res);
 });
 
+app.post("/admin/usuarios", requireApiKey, async (req, res) => {
+  await handleAdminCreateUser(req, res);
+});
+
+app.patch("/admin/usuarios/:uid", requireApiKey, async (req, res) => {
+  await handleAdminUpdateUser(req, res);
+});
+
+app.patch("/admin/usuarios/:uid/status", requireApiKey, async (req, res) => {
+  await handleAdminUpdateUserStatus(req, res);
+});
+
 async function handleImport(req, res, shouldRunAnalytics) {
   try {
     const requestedEmpresaId = getEmpresaIdFromRequest(req);
@@ -283,6 +295,276 @@ async function handleIndicatorItemsSearch(req, res) {
   } catch (error) {
     sendError(res, error);
   }
+}
+
+async function handleAdminCreateUser(req, res) {
+  try {
+    const payload = normalizeAdminUserPayload(req.body || {}, {isCreate: true});
+
+    initializeFirebase();
+
+    let userRecord;
+    let createdAuthUser = false;
+
+    try {
+      userRecord = await admin.auth().getUserByEmail(payload.email);
+      const authUpdate = {
+        displayName: payload.nome,
+        disabled: !payload.ativo,
+      };
+
+      if (payload.senha) {
+        authUpdate.password = payload.senha;
+      }
+
+      userRecord = await admin.auth().updateUser(userRecord.uid, authUpdate);
+    } catch (error) {
+      if (error.code !== "auth/user-not-found") {
+        throw error;
+      }
+
+      userRecord = await admin.auth().createUser({
+        email: payload.email,
+        password: payload.senha,
+        displayName: payload.nome,
+        disabled: !payload.ativo,
+      });
+      createdAuthUser = true;
+    }
+
+    await saveAdminUserAccess(userRecord.uid, payload, {merge: true});
+
+    res.status(createdAuthUser ? 201 : 200).json({
+      ok: true,
+      createdAuthUser,
+      uid: userRecord.uid,
+      usuario: publicAdminUserResponse(userRecord.uid, payload),
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function handleAdminUpdateUser(req, res) {
+  try {
+    const uid = String(req.params.uid || "").trim();
+    if (!uid) {
+      const error = new Error("uid obrigatorio.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const payload = normalizeAdminUserPayload(req.body || {}, {isCreate: false});
+    initializeFirebase();
+
+    const authUpdate = {};
+    if (payload.nome) {
+      authUpdate.displayName = payload.nome;
+    }
+    if (typeof payload.ativo === "boolean") {
+      authUpdate.disabled = !payload.ativo;
+    }
+    if (payload.senha) {
+      authUpdate.password = payload.senha;
+    }
+
+    let userRecord = await admin.auth().getUser(uid);
+    if (Object.keys(authUpdate).length > 0) {
+      userRecord = await admin.auth().updateUser(uid, authUpdate);
+    }
+
+    const existingDoc = await db.collection("usuarios").doc(uid).get();
+    const existingData = existingDoc.exists ? existingDoc.data() : {};
+    const mergedPayload = {
+      nome: payload.nome || existingData.nome || userRecord.displayName || "",
+      email: existingData.email || userRecord.email || payload.email || "",
+      perfil: payload.perfil || existingData.perfil || existingData.role || "consulta",
+      empresa_id: payload.empresa_id || existingData.empresa_id || existingData.empresaId || null,
+      lojas_ids: payload.lojas_ids || existingData.lojas_ids || [],
+      categorias_ids: payload.categorias_ids || existingData.categorias_ids || [],
+      ativo: typeof payload.ativo === "boolean" ? payload.ativo : existingData.ativo !== false,
+    };
+    mergedPayload.role = mergedPayload.perfil;
+
+    await saveAdminUserAccess(uid, mergedPayload, {merge: true});
+
+    res.json({
+      ok: true,
+      uid,
+      usuario: publicAdminUserResponse(uid, mergedPayload),
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function handleAdminUpdateUserStatus(req, res) {
+  try {
+    const uid = String(req.params.uid || "").trim();
+    if (!uid) {
+      const error = new Error("uid obrigatorio.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const docRef = db.collection("usuarios").doc(uid);
+    const snapshot = await docRef.get();
+    const currentData = snapshot.exists ? snapshot.data() : {};
+    const ativo = typeof req.body.ativo === "boolean" ? req.body.ativo : currentData.ativo === false;
+
+    initializeFirebase();
+    await admin.auth().updateUser(uid, {disabled: !ativo});
+    await docRef.set({
+      ativo,
+      atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    res.json({ok: true, uid, ativo});
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
+  const cleanPayload = {
+    uid,
+    nome: payload.nome,
+    email: payload.email,
+    perfil: payload.perfil || payload.role || "consulta",
+    role: payload.role || payload.perfil || "consulta",
+    empresa_id: payload.empresa_id,
+    lojas_ids: normalizeStringArray(payload.lojas_ids),
+    categorias_ids: normalizeStringArray(payload.categorias_ids),
+    ativo: payload.ativo !== false,
+    atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await admin.auth().setCustomUserClaims(uid, {
+    empresa_id: cleanPayload.empresa_id,
+    role: cleanPayload.role,
+    admin: cleanPayload.role === "admin",
+  });
+
+  await db.collection("usuarios").doc(uid).set(cleanPayload, options);
+}
+
+function publicAdminUserResponse(uid, payload) {
+  return {
+    uid,
+    nome: payload.nome,
+    email: payload.email,
+    perfil: payload.perfil || payload.role || "consulta",
+    role: payload.role || payload.perfil || "consulta",
+    empresa_id: payload.empresa_id,
+    lojas_ids: normalizeStringArray(payload.lojas_ids),
+    categorias_ids: normalizeStringArray(payload.categorias_ids),
+    ativo: payload.ativo !== false,
+  };
+}
+
+function normalizeAdminUserPayload(body, {isCreate}) {
+  const perfil = stringOrNull(body.perfil || body.role);
+  const payload = {
+    nome: stringOrNull(body.nome || body.name || body.displayName),
+    email: stringOrNull(body.email),
+    senha: stringOrNull(body.senha || body.password),
+    perfil,
+    empresa_id: stringOrNull(body.empresa_id || body.empresaId || body.tenant_id),
+    lojas_ids: normalizeStringArray(body.lojas_ids || body.lojasIds || body.lojas || body.loja_id || body.lojaId),
+    categorias_ids: normalizeStringArray(
+      body.categorias_ids || body.categoriasIds || body.categorias || body.categoria_id || body.categoriaId,
+    ),
+    ativo: typeof body.ativo === "boolean" ? body.ativo : undefined,
+  };
+
+  payload.role = payload.perfil;
+
+  if (isCreate) {
+    requireStringField(payload.nome, "nome");
+    requireStringField(payload.email, "email");
+    requireStringField(payload.senha, "senha");
+    requireStringField(payload.perfil, "perfil");
+    requireStringField(payload.empresa_id, "empresa_id");
+    requireArrayField(payload.lojas_ids, "lojas_ids");
+    requireArrayField(payload.categorias_ids, "categorias_ids");
+    requireBooleanField(payload.ativo, "ativo");
+  } else {
+    requireStringField(payload.nome, "nome");
+    requireStringField(payload.perfil, "perfil");
+    requireStringField(payload.empresa_id, "empresa_id");
+    requireArrayField(payload.lojas_ids, "lojas_ids");
+    requireArrayField(payload.categorias_ids, "categorias_ids");
+    requireBooleanField(payload.ativo, "ativo");
+  }
+
+  if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
+    const error = new Error("email invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (payload.senha && payload.senha.length < 6) {
+    const error = new Error("senha deve ter pelo menos 6 caracteres.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const allowedRoles = new Set(["admin", "gestor", "compras", "consulta"]);
+  if (payload.perfil && !allowedRoles.has(payload.perfil)) {
+    const error = new Error("perfil invalido. Use admin, gestor, compras ou consulta.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return payload;
+}
+
+function requireStringField(value, fieldName) {
+  if (!value) {
+    const error = new Error(`${fieldName} obrigatorio.`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function requireArrayField(value, fieldName) {
+  if (!Array.isArray(value) || value.length === 0) {
+    const error = new Error(`${fieldName} obrigatorio.`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function requireBooleanField(value, fieldName) {
+  if (typeof value !== "boolean") {
+    const error = new Error(`${fieldName} obrigatorio.`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function stringOrNull(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const text = String(value).trim();
+  return text || null;
+}
+
+function normalizeStringArray(value) {
+  if (value === undefined || value === null || value === "") {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 async function processPendingUploads(empresaId = null) {
