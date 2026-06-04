@@ -888,6 +888,21 @@ function turnoverStatusLabel(status) {
   return labels[status] || "Nao classificado";
 }
 
+function isRuptureItem(item) {
+  return item.statusEstoque === "ruptura";
+}
+
+function isPreRuptureItem(item) {
+  return ["abaixo_minimo", "critico", "atencao"].includes(item.statusEstoque);
+}
+
+function calculatePreRuptureImpactValue(item) {
+  const coverageGap = item.coberturaDias === null || item.coberturaDias === undefined ?
+    getAbcCoveragePolicy(item).safetyDays :
+    Math.max(0, getAbcCoveragePolicy(item).safetyDays - item.coberturaDias);
+  const projectedRisk = coverageGap * item.giroDiario * getEstimatedUnitValue(item);
+  return Math.max(projectedRisk, item.investimentoSugerido || 0);
+}
 function negativeStockFields(item) {
   const estoqueAtual = roundUnits(item.estoqueAtual);
   const estoqueNegativo = estoqueAtual < 0;
@@ -1053,9 +1068,12 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const activeProducts = metricsList.filter((item) => item.giroDiario > 0);
   const availableActiveProducts = activeProducts.filter((item) => item.estoqueAtual > 0);
   const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual <= 0);
+  const ruptureProducts = metricsList.filter(isRuptureItem);
+  const preRuptureProducts = metricsList.filter(isPreRuptureItem);
   const totalVendas = sum(metricsList, (item) => item.receita45d);
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
-  const perdaRuptura = sum(stockoutProducts, (item) => item.vendaPerdidaEstimada);
+  const perdaRuptura = sum(ruptureProducts, (item) => item.vendaPerdidaEstimada);
+  const valorPreRuptura = sum(preRuptureProducts, calculatePreRuptureImpactValue);
   const investimento = sum(sugestoesCompra, (item) => item.investimentoSugerido);
   const itensSemVendas = metricsList.filter((item) => item.statusEstoque === "sem_vendas");
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
@@ -1115,12 +1133,18 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),
     cobertura_media_dias: round(coberturaMedia),
-    itens_criticos: metricsList.filter((item) => ["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(item.statusEstoque)).length,
+    itens_criticos: metricsList.filter((item) => ["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)).length,
     itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
-    itens_ruptura: stockoutProducts.length,
-    itens_ruptura_classe_a: countByAbc(stockoutProducts, "A"),
-    itens_ruptura_classe_b: countByAbc(stockoutProducts, "B"),
-    itens_ruptura_classe_c: countByAbc(stockoutProducts, "C"),
+    itens_pre_ruptura: preRuptureProducts.length,
+    itens_pre_ruptura_classe_a: countByAbc(preRuptureProducts, "A"),
+    itens_pre_ruptura_classe_b: countByAbc(preRuptureProducts, "B"),
+    itens_pre_ruptura_classe_c: countByAbc(preRuptureProducts, "C"),
+    valor_pre_ruptura: round(valorPreRuptura),
+    valor_pre_ruptura_formatado: formatCurrency(valorPreRuptura),
+    itens_ruptura: ruptureProducts.length,
+    itens_ruptura_classe_a: countByAbc(ruptureProducts, "A"),
+    itens_ruptura_classe_b: countByAbc(ruptureProducts, "B"),
+    itens_ruptura_classe_c: countByAbc(ruptureProducts, "C"),
     itens_estoque_negativo: itensEstoqueNegativo.length,
     itens_estoque_negativo_classe_a: countByAbc(itensEstoqueNegativo, "A"),
     itens_estoque_negativo_classe_b: countByAbc(itensEstoqueNegativo, "B"),
@@ -1146,12 +1170,12 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     perda_ruptura_formatada: formatCurrency(perdaRuptura),
     valor_perda_ruptura: round(perdaRuptura),
     valor_perda_ruptura_formatado: formatCurrency(perdaRuptura),
-    perda_ruptura_classe_a: round(sum(filterByAbc(stockoutProducts, "A"), (item) => item.vendaPerdidaEstimada)),
-    perda_ruptura_classe_a_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "A"), (item) => item.vendaPerdidaEstimada)),
-    perda_ruptura_classe_b: round(sum(filterByAbc(stockoutProducts, "B"), (item) => item.vendaPerdidaEstimada)),
-    perda_ruptura_classe_b_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "B"), (item) => item.vendaPerdidaEstimada)),
-    perda_ruptura_classe_c: round(sum(filterByAbc(stockoutProducts, "C"), (item) => item.vendaPerdidaEstimada)),
-    perda_ruptura_classe_c_formatada: formatCurrency(sum(filterByAbc(stockoutProducts, "C"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_a: round(sum(filterByAbc(ruptureProducts, "A"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_a_formatada: formatCurrency(sum(filterByAbc(ruptureProducts, "A"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_b: round(sum(filterByAbc(ruptureProducts, "B"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_b_formatada: formatCurrency(sum(filterByAbc(ruptureProducts, "B"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_c: round(sum(filterByAbc(ruptureProducts, "C"), (item) => item.vendaPerdidaEstimada)),
+    perda_ruptura_classe_c_formatada: formatCurrency(sum(filterByAbc(ruptureProducts, "C"), (item) => item.vendaPerdidaEstimada)),
     produtos_com_outlier: produtosComOutlier,
     produtos_com_sazonalidade: produtosComSazonalidade,
     investimento_sugerido: round(investimento),
@@ -1177,6 +1201,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
       "estoque_negativo",
       "ruptura",
       "abaixo_minimo",
+      "pre_ruptura",
       "alertas",
       "sugestao_compra",
       "itens_sem_vendas",
@@ -1192,7 +1217,7 @@ function buildAlerts(metricsList) {
   for (const item of metricsList) {
     const alertType = item.statusEstoque;
 
-    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(alertType)) {
+    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(alertType)) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_${alertType}`,
         empresa_id: item.empresaId || null,
@@ -1355,6 +1380,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
   const criticalItems = [];
   const negativeStockItems = [];
   const ruptureItems = [];
+  const preRuptureItems = [];
   const noSalesItems = [];
   const purchaseItems = [];
 
@@ -1366,11 +1392,11 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
       descricao: "Giro, estoque e cobertura no periodo de 45 dias",
     }));
 
-    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo"].includes(item.statusEstoque)) {
+    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
       criticalItems.push(toIndicatorItemDoc("itens_criticos", item, {
-        status: item.statusEstoque,
-        valor: item.estoqueAtual,
-        valorFormatado: `${round(item.coberturaDias || 0)} dias`,
+        status: isPreRuptureItem(item) ? "pre_ruptura" : item.statusEstoque,
+        valor: isPreRuptureItem(item) ? calculatePreRuptureImpactValue(item) : item.estoqueAtual,
+        valorFormatado: isPreRuptureItem(item) ? formatCurrency(calculatePreRuptureImpactValue(item)) : `${round(item.coberturaDias || 0)} dias`,
         descricao: getActionDescription(item),
       }));
     }
@@ -1384,11 +1410,20 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
       }));
     }
 
-    if (item.statusEstoque === "ruptura") {
+    if (isRuptureItem(item)) {
       ruptureItems.push(toIndicatorItemDoc("ruptura", item, {
         status: "ruptura",
         valor: item.vendaPerdidaEstimada,
         valorFormatado: formatCurrency(item.vendaPerdidaEstimada),
+        descricao: getActionDescription(item),
+      }));
+    }
+
+    if (isPreRuptureItem(item)) {
+      preRuptureItems.push(toIndicatorItemDoc("pre_ruptura", item, {
+        status: "pre_ruptura",
+        valor: calculatePreRuptureImpactValue(item),
+        valorFormatado: formatCurrency(calculatePreRuptureImpactValue(item)),
         descricao: getActionDescription(item),
       }));
     }
@@ -1416,6 +1451,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
   items.push(...limitRows(criticalItems.sort(compareBusinessPriority)));
   items.push(...limitRows(negativeStockItems.sort(compareBusinessPriority)));
   items.push(...limitRows(ruptureItems.sort(compareBusinessPriority)));
+  items.push(...limitRows(preRuptureItems.sort(compareBusinessPriority)));
   items.push(...limitRows(noSalesItems.sort(compareBusinessPriority)));
   items.push(...limitRows(purchaseItems.sort(compareBusinessPriority)));
 
@@ -1655,11 +1691,15 @@ function getActionDescription(item) {
   }
 
   if (item.statusEstoque === "critico") {
-    return `Cobertura menor ou igual a ${CRITICAL_COVERAGE_DAYS} dias.`;
+    return `Pre-ruptura: cobertura menor ou igual a ${CRITICAL_COVERAGE_DAYS} dias.`;
   }
 
   if (item.statusEstoque === "abaixo_minimo") {
-    return "Estoque abaixo do minimo cadastrado.";
+    return "Pre-ruptura: estoque abaixo do minimo indicado para compra.";
+  }
+
+  if (item.statusEstoque === "atencao") {
+    return "Pre-ruptura: cobertura baixa, monitorar reposicao.";
   }
 
   return "Acompanhar indicador.";
@@ -1669,8 +1709,9 @@ function alertTitle(statusEstoque) {
   const titles = {
     estoque_negativo: "Estoque negativo",
     ruptura: "Ruptura detectada",
-    critico: "Risco critico",
-    abaixo_minimo: "Estoque abaixo do minimo",
+    critico: "Pre-ruptura",
+    abaixo_minimo: "Pre-ruptura",
+    atencao: "Pre-ruptura",
   };
 
   return titles[statusEstoque] || "Alerta de estoque";
@@ -1885,8 +1926,8 @@ function getStatusSortScore(item) {
     estoque_negativo: 55,
     sem_vendas: 50,
     critico: 45,
-    abaixo_minimo: 35,
-    atencao: 25,
+    abaixo_minimo: 45,
+    atencao: 40,
   };
 
   return scores[status] || 0;
