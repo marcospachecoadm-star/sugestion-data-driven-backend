@@ -25,6 +25,16 @@
       "fields": [
         {"fieldPath": "empresa_id", "order": "ASCENDING"},
         {"fieldPath": "indicador_tipo", "order": "ASCENDING"},
+        {"fieldPath": "abc_prioridade", "order": "ASCENDING"},
+        {"fieldPath": "prioridade_score", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "indicadoresItens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "empresa_id", "order": "ASCENDING"},
+        {"fieldPath": "indicador_tipo", "order": "ASCENDING"},
         {"fieldPath": "busca_tokens", "arrayConfig": "CONTAINS"}
       ]
     },

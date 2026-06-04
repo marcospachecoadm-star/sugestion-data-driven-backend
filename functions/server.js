@@ -234,7 +234,8 @@ async function handleIndicatorItemsSearch(req, res) {
     const rawSearch = String(req.query.q || req.query.busca || req.query.search || "").trim();
     const searchTokens = isSearchAllQuery(rawSearch) ? [] : getQuerySearchTokens(rawSearch);
 
-    let query = db.collection(OUTPUT_COLLECTIONS.indicadoresItens)
+    const indicatorCollection = db.collection(OUTPUT_COLLECTIONS.indicadoresItens);
+    let query = indicatorCollection
       .where("empresa_id", "==", empresaId)
       .where("indicador_tipo", "==", indicadorTipo);
 
@@ -242,9 +243,26 @@ async function handleIndicatorItemsSearch(req, res) {
       query = query.where("busca_tokens", "array-contains", searchTokens[0]);
     } else if (searchTokens.length > 1) {
       query = query.where("busca_tokens", "array-contains-any", searchTokens);
+    } else if (indicadorTipo === "giro_medio") {
+      query = query.orderBy("ranking", "asc").limit(limit);
+    } else {
+      query = query.orderBy("abc_prioridade", "asc").orderBy("prioridade_score", "desc").limit(limit);
     }
 
-    const snapshot = await query.get();
+    let snapshot;
+    try {
+      snapshot = await query.get();
+    } catch (error) {
+      if (searchTokens.length === 0 && isFirestoreIndexError(error)) {
+        const fallbackQuery = indicatorCollection
+          .where("empresa_id", "==", empresaId)
+          .where("indicador_tipo", "==", indicadorTipo);
+        snapshot = await fallbackQuery.get();
+      } else {
+        throw error;
+      }
+    }
+
     const items = snapshot.docs
       .map((doc) => ({
         id: doc.id,
@@ -2326,6 +2344,11 @@ function safeDocId(value) {
 
 function cryptoSafeId() {
   return `doc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function isFirestoreIndexError(error) {
+  const message = String(error && error.message ? error.message : "").toLowerCase();
+  return error && (error.code === 9 || error.code === "failed-precondition" || message.includes("index"));
 }
 
 function sendError(res, error) {
