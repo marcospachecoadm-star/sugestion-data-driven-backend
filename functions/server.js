@@ -40,6 +40,29 @@ const TREND_MIN_FACTOR = Number(process.env.TREND_MIN_FACTOR || 0.75);
 const TREND_MAX_FACTOR = Number(process.env.TREND_MAX_FACTOR || 1.4);
 const TREND_CONFIRMATION_THRESHOLD = Number(process.env.TREND_CONFIRMATION_THRESHOLD || 1.15);
 
+const PROFILE_LABELS = {
+  admin: "Admin",
+  gestor: "Gestor",
+  compras: "Compras",
+  consulta: "Consulta",
+};
+
+const DEFAULT_EMPRESA_LABELS = {
+  superparanaloja1: "SuperParana Loja 1",
+};
+
+const DEFAULT_LOJA_LABELS = {
+  superparanaloja1: "Matriz Centro Curitiba",
+};
+
+const DEFAULT_CATEGORIA_LABELS = {
+  mercearia: "Mercearia",
+  bazar: "Bazar",
+  pereciveis: "Pereciveis",
+  produtos_nao_vendaveis: "Produtos nao vendaveis",
+  gastronomia: "Gastronomia",
+};
+
 const RAW_COLLECTIONS = {
   produtos: "produtos",
   estoque: "estoque",
@@ -380,8 +403,11 @@ async function handleAdminUpdateUser(req, res) {
       email: existingData.email || userRecord.email || payload.email || "",
       perfil: payload.perfil || existingData.perfil || existingData.role || "consulta",
       empresa_id: payload.empresa_id || existingData.empresa_id || existingData.empresaId || null,
+      empresa_nome: payload.empresa_nome || existingData.empresa_nome || null,
       lojas_ids: payload.lojas_ids || existingData.lojas_ids || [],
-      categorias_ids: payload.categorias_ids || existingData.categorias_ids || [],
+      lojas_nomes: payload.lojas_nomes || existingData.lojas_nomes || [],
+      categorias_ids: payload.categorias_ids || existingData.categorias_ids || existingData.categoria_ids || [],
+      categorias_nomes: payload.categorias_nomes || existingData.categorias_nomes || [],
       ativo: typeof payload.ativo === "boolean" ? payload.ativo : existingData.ativo !== false,
     };
     mergedPayload.role = mergedPayload.perfil;
@@ -416,6 +442,9 @@ async function handleAdminUpdateUserStatus(req, res) {
     await admin.auth().updateUser(uid, {disabled: !ativo});
     await docRef.set({
       ativo,
+      status_texto: getStatusLabel(ativo),
+      status_color: ativo ? "#166534" : "#991B1B",
+      status_bg_color: ativo ? "#DCFCE7" : "#FEE2E2",
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
 
@@ -426,16 +455,33 @@ async function handleAdminUpdateUserStatus(req, res) {
 }
 
 async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
+  const perfil = payload.perfil || payload.role || "consulta";
+  const lojasIds = normalizeStringArray(payload.lojas_ids);
+  const categoriasIds = normalizeStringArray(payload.categorias_ids || payload.categoria_ids);
+  const lojasNomes = normalizeDisplayArray(payload.lojas_nomes, lojasIds, DEFAULT_LOJA_LABELS);
+  const categoriasNomes = normalizeDisplayArray(payload.categorias_nomes, categoriasIds, DEFAULT_CATEGORIA_LABELS);
+  const ativo = payload.ativo !== false;
+
   const cleanPayload = {
     uid,
     nome: payload.nome,
     email: payload.email,
-    perfil: payload.perfil || payload.role || "consulta",
-    role: payload.role || payload.perfil || "consulta",
+    perfil,
+    perfil_label: getProfileLabel(perfil),
+    role: perfil,
     empresa_id: payload.empresa_id,
-    lojas_ids: normalizeStringArray(payload.lojas_ids),
-    categorias_ids: normalizeStringArray(payload.categorias_ids),
-    ativo: payload.ativo !== false,
+    empresa_nome: payload.empresa_nome || DEFAULT_EMPRESA_LABELS[payload.empresa_id] || payload.empresa_id,
+    lojas_ids: lojasIds,
+    lojas_nomes: lojasNomes,
+    lojas_texto: lojasNomes.join(", "),
+    categorias_ids: categoriasIds,
+    categoria_ids: categoriasIds,
+    categorias_nomes: categoriasNomes,
+    categorias_texto: categoriasNomes.join(", "),
+    ativo,
+    status_texto: getStatusLabel(ativo),
+    status_color: ativo ? "#166534" : "#991B1B",
+    status_bg_color: ativo ? "#DCFCE7" : "#FEE2E2",
     atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
   };
 
@@ -449,16 +495,33 @@ async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
 }
 
 function publicAdminUserResponse(uid, payload) {
+  const perfil = payload.perfil || payload.role || "consulta";
+  const lojasIds = normalizeStringArray(payload.lojas_ids);
+  const categoriasIds = normalizeStringArray(payload.categorias_ids || payload.categoria_ids);
+  const lojasNomes = normalizeDisplayArray(payload.lojas_nomes, lojasIds, DEFAULT_LOJA_LABELS);
+  const categoriasNomes = normalizeDisplayArray(payload.categorias_nomes, categoriasIds, DEFAULT_CATEGORIA_LABELS);
+  const ativo = payload.ativo !== false;
+
   return {
     uid,
     nome: payload.nome,
     email: payload.email,
-    perfil: payload.perfil || payload.role || "consulta",
-    role: payload.role || payload.perfil || "consulta",
+    perfil,
+    perfil_label: getProfileLabel(perfil),
+    role: perfil,
     empresa_id: payload.empresa_id,
-    lojas_ids: normalizeStringArray(payload.lojas_ids),
-    categorias_ids: normalizeStringArray(payload.categorias_ids),
-    ativo: payload.ativo !== false,
+    empresa_nome: payload.empresa_nome || DEFAULT_EMPRESA_LABELS[payload.empresa_id] || payload.empresa_id,
+    lojas_ids: lojasIds,
+    lojas_nomes: lojasNomes,
+    lojas_texto: lojasNomes.join(", "),
+    categorias_ids: categoriasIds,
+    categoria_ids: categoriasIds,
+    categorias_nomes: categoriasNomes,
+    categorias_texto: categoriasNomes.join(", "),
+    ativo,
+    status_texto: getStatusLabel(ativo),
+    status_color: ativo ? "#166534" : "#991B1B",
+    status_bg_color: ativo ? "#DCFCE7" : "#FEE2E2",
   };
 }
 
@@ -470,9 +533,15 @@ function normalizeAdminUserPayload(body, {isCreate}) {
     senha: stringOrNull(body.senha || body.password),
     perfil,
     empresa_id: stringOrNull(body.empresa_id || body.empresaId || body.tenant_id),
+    empresa_nome: stringOrNull(body.empresa_nome || body.empresaNome || body.company || body.empresa),
     lojas_ids: normalizeStringArray(body.lojas_ids || body.lojasIds || body.lojas || body.loja_id || body.lojaId),
+    lojas_nomes: normalizeStringArray(body.lojas_nomes || body.lojasNomes || body.stores || body.lojas_texto),
     categorias_ids: normalizeStringArray(
-      body.categorias_ids || body.categoriasIds || body.categorias || body.categoria_id || body.categoriaId,
+      body.categorias_ids || body.categoria_ids || body.categoriasIds || body.categoriaIds ||
+        body.categorias || body.categoria_id || body.categoriaId,
+    ),
+    categorias_nomes: normalizeStringArray(
+      body.categorias_nomes || body.categoriasNomes || body.categorias_texto || body.categories,
     ),
     ativo: typeof body.ativo === "boolean" ? body.ativo : undefined,
   };
@@ -565,6 +634,24 @@ function normalizeStringArray(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeDisplayArray(value, ids, labelsById) {
+  const explicitValues = normalizeStringArray(value);
+  if (explicitValues.length > 0) {
+    return explicitValues;
+  }
+
+  return normalizeStringArray(ids).map((id) => labelsById[id] || id);
+}
+
+function getProfileLabel(value) {
+  const profile = String(value || "consulta").trim().toLowerCase();
+  return PROFILE_LABELS[profile] || profile.charAt(0).toUpperCase() + profile.slice(1);
+}
+
+function getStatusLabel(ativo) {
+  return ativo ? "Ativo" : "Inativo";
 }
 
 async function processPendingUploads(empresaId = null) {
