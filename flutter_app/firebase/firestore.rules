@@ -1,39 +1,226 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/usuarios/$(request.auth.uid);
+    }
+
+    function userExists() {
+      return isSignedIn() && exists(userPath());
+    }
+
+    function userData() {
+      return get(userPath()).data;
+    }
+
+    function userEmpresaId() {
+      return userData().empresa_id;
+    }
+
+    function isFlutterFlow() {
+      return isSignedIn()
+        && request.auth.token.email == "firebase@flutterflow.io";
+    }
+
+    function isAdmin() {
+      return userExists()
+        && (
+          userData().admin == true
+          || userData().role == "admin"
+          || userData().perfil == "admin"
+          || userData().perfil == "Administrador"
+        );
+    }
+
+    function isManager() {
+      return userExists()
+        && (
+          userData().role in ["admin", "gestor"]
+          || userData().perfil in ["admin", "gestor", "Administrador"]
+        );
+    }
+
+    function canManage() {
+      return isFlutterFlow();
+    }
+
+    function hasTenant() {
+      return userExists() && userEmpresaId() != null;
+    }
+
+    function tenantDocByField() {
+      return hasTenant()
+        && resource.data.empresa_id != null
+        && resource.data.empresa_id == userEmpresaId();
+    }
+
+    function tenantDocById(docId) {
+      return hasTenant()
+        && (
+          docId == userEmpresaId()
+          || docId.matches(userEmpresaId() + "_.*")
+        );
+    }
+
+    function canReadTenantDoc(docId) {
+      return isFlutterFlow() || tenantDocByField() || tenantDocById(docId);
+    }
+
+    function canCreateTenantDoc() {
+      return isFlutterFlow()
+        || (
+          hasTenant()
+          && request.resource.data.empresa_id != null
+          && request.resource.data.empresa_id == userEmpresaId()
+        );
+    }
+
+    function canManageTenantDoc() {
+      return isFlutterFlow()
+        || (
+          isManager()
+          && hasTenant()
+          && resource.data.empresa_id != null
+          && resource.data.empresa_id == userEmpresaId()
+          && request.resource.data.empresa_id == userEmpresaId()
+        );
+    }
+
+    function canCreateManagedTenantDoc() {
+      return isFlutterFlow()
+        || (
+          isManager()
+          && hasTenant()
+          && request.resource.data.empresa_id != null
+          && request.resource.data.empresa_id == userEmpresaId()
+        );
+    }
+
+    function validImportacao() {
+      return request.resource.data.empresa_id == userEmpresaId()
+        && request.resource.data.usuario_id == request.auth.uid
+        && request.resource.data.status in ["pendente", "processando", "processada", "erro"]
+        && request.resource.data.tipo_arquivo in ["produtos", "estoque", "vendas"]
+        && request.resource.data.arquivo_path is string
+        && request.resource.data.arquivo_path.matches(
+          "^uploads/" + userEmpresaId() + "/" + userEmpresaId() + "_(produtos|estoque|vendas)_.*\\.csv$"
+        )
+        && request.resource.data.arquivo_nome is string
+        && request.resource.data.arquivo_nome.matches(
+          "^" + userEmpresaId() + "_(produtos|estoque|vendas)_.*\\.csv$"
+        );
+    }
+
+    match /usuarios/{userId} {
+      allow read: if isSignedIn()
+        && (
+          request.auth.uid == userId
+          || (
+            userExists()
+            && resource.data.empresa_id != null
+            && resource.data.empresa_id == userEmpresaId()
+          )
+        );
+
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn()
+        && (
+          request.auth.uid == userId
+          || canManageTenantDoc()
+        );
+      allow delete: if canManage();
+    }
+
+    match /empresas/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateManagedTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /lojas/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateManagedTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /categorias/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateManagedTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /produtos/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /estoque/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /vendas/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateTenantDoc();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /importacoes/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create: if canCreateTenantDoc() && validImportacao();
+      allow update: if canManageTenantDoc();
+      allow delete: if canManage();
+    }
+
+    match /historicoProcessamentos/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow create, update, delete: if canManage();
+    }
+
     match /indicadoresResumo/{document} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
-      allow delete: if false;
+      allow read: if canReadTenantDoc(document);
+      allow create, update, delete: if canManage();
     }
 
     match /indicadoresItens/{document} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
-      allow delete: if false;
+      allow read: if canReadTenantDoc(document);
+      allow create, update, delete: if canManage();
     }
 
     match /alertas/{document} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
-      allow delete: if false;
+      allow read: if canReadTenantDoc(document);
+      allow update: if canReadTenantDoc(document);
+      allow create, delete: if canManage();
     }
 
     match /acoesRecomendadas/{document} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
-      allow delete: if false;
+      allow read: if canReadTenantDoc(document);
+      allow update: if canReadTenantDoc(document);
+      allow create, delete: if canManage();
     }
 
-    match /usuarios/{document} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
-      allow delete: if false;
+    match /sugestoesCompra/{document} {
+      allow read: if canReadTenantDoc(document);
+      allow update: if canReadTenantDoc(document);
+      allow create, delete: if canManage();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

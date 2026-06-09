@@ -7,7 +7,6 @@ const {
   processarArquivoCsv,
   processarUploadsPendentes: processarUploadsPendentesService,
 } = require("./services/csvImportService");
-const {rebuildAnalytics} = require("./analytics/rebuildAnalytics");
 
 initializeFirebase();
 
@@ -22,6 +21,13 @@ function shouldExecute(req) {
 
 function sendPendingExecution(res, message = "Processamento pendente. Para executar, use ?executar=sim") {
   res.status(200).send(message);
+}
+
+function sendRenderBackendRedirect(res) {
+  res.status(409).json({
+    ok: false,
+    erro: "Analytics desativado nas Firebase Functions para evitar conflito de colecoes. Use o backend Render (/run-analytics ou /import-and-run), que grava as colecoes oficiais do app.",
+  });
 }
 
 function legacyAnalyticsConsolidated(name) {
@@ -39,20 +45,7 @@ async function runAnalyticsForRequest(req, res) {
     return;
   }
 
-  try {
-    const empresaId = getEmpresaIdFromRequest(req);
-    const summary = await rebuildAnalytics(empresaId);
-    res.status(200).json({
-      ok: true,
-      summary,
-    });
-  } catch (error) {
-    console.error("Erro ao processar indicadores:", error);
-    res.status(500).json({
-      ok: false,
-      erro: error && error.message ? error.message : String(error),
-    });
-  }
+  sendRenderBackendRedirect(res);
 }
 
 exports.testeUpload = functions
@@ -101,9 +94,7 @@ exports.processarUploadsPendentes = functions
 exports.calcularDashboard = functions.pubsub
   .schedule("every 168 hours")
   .onRun(async () => {
-    console.log("Calculando analytics consolidado");
-    const summary = await rebuildAnalytics();
-    console.log("Analytics consolidado atualizado:", summary);
+    console.log("calcularDashboard desativado nas Firebase Functions. Use o cron do Render /import-and-run.");
     return null;
   });
 

@@ -20,7 +20,7 @@ async function buscarResumoIndicadores(params = {}) {
     getTenantSnap(db, "ranking_vendas", empresaId),
     getTenantSnap(db, "curva_abc", empresaId),
     getTenantSnap(db, "previsao_ruptura", empresaId),
-    getTenantSnap(db, "sugestoes_compra", empresaId),
+    getTenantSnap(db, "sugestoesCompra", empresaId),
     getTenantSnap(db, "produtos_mortos", empresaId),
     getTenantSnap(db, "alertas", empresaId),
   ]);

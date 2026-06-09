@@ -6,29 +6,49 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function tenantId() {
-      return request.auth.token.empresa_id;
+    function userDoc() {
+      return firestore.get(
+        /databases/(default)/documents/usuarios/$(request.auth.uid)
+      ).data;
     }
 
-    function isTenantUpload(empresaId) {
-      return signedIn() && tenantId() == empresaId;
+    function canUploadCsv(empresaId) {
+      return signedIn()
+        && userDoc().ativo == true
+        && userDoc().empresa_id == empresaId
+        && (
+          userDoc().perfil in ["admin", "gestor", "compras"]
+          || userDoc().role in ["admin", "gestor", "compras"]
+        );
+    }
+
+    function canReadTenantFile(empresaId) {
+      return signedIn()
+        && userDoc().ativo == true
+        && userDoc().empresa_id == empresaId;
     }
 
     match /uploads/{empresaId}/{fileName} {
-      allow read: if isTenantUpload(empresaId);
-      allow write: if isTenantUpload(empresaId) &&
-        request.resource.size < 10 * 1024 * 1024 &&
-        fileName.matches('.*\\.csv');
+      allow create, update: if canUploadCsv(empresaId)
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType in [
+          "text/csv",
+          "application/csv",
+          "application/vnd.ms-excel",
+          "application/octet-stream"
+        ]
+        && fileName.matches("^" + empresaId + "_(produtos|estoque|vendas)_.*\\.csv$");
+
+      allow read: if canReadTenantFile(empresaId);
+      allow delete: if false;
     }
 
     match /processada/{empresaId}/{fileName} {
-      allow read: if isTenantUpload(empresaId);
-      allow write: if false;
+      allow read, write: if false;
     }
 
     match /erro/{empresaId}/{fileName} {
-      allow read: if isTenantUpload(empresaId);
-      allow write: if false;
+      allow read, write: if false;
     }
 
     match /{allPaths=**} {

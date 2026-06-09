@@ -147,6 +147,7 @@ app.get("/", (_req, res) => {
       "/import-storage-csv",
       "/import-and-run",
       "/run-analytics",
+      "/run-analytics-all",
       "/indicadores/itens",
       "/search-indicadores",
     ],
@@ -200,12 +201,24 @@ app.post("/run-analytics", requireApiKey, async (req, res) => {
   await handleAnalytics(req, res);
 });
 
+app.get("/run-analytics-all", requireApiKey, async (req, res) => {
+  await handleAnalyticsAll(req, res);
+});
+
+app.post("/run-analytics-all", requireApiKey, async (req, res) => {
+  await handleAnalyticsAll(req, res);
+});
+
 app.get("/indicadores/itens", requireApiKey, async (req, res) => {
   await handleIndicatorItemsSearch(req, res);
 });
 
 app.get("/search-indicadores", requireApiKey, async (req, res) => {
   await handleIndicatorItemsSearch(req, res);
+});
+
+app.post("/admin/onboard-empresa", requireApiKey, async (req, res) => {
+  await handleAdminOnboardEmpresa(req, res);
 });
 
 app.post("/admin/usuarios", requireApiKey, async (req, res) => {
@@ -248,6 +261,26 @@ async function handleAnalytics(req, res) {
     assertTenantScope(empresaId);
     const summary = await rebuildAnalytics(empresaId);
     res.json({ok: true, summary});
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function handleAnalyticsAll(_req, res) {
+  try {
+    const empresas = await listActiveEmpresaIds();
+    const analytics = [];
+
+    for (const empresaId of empresas) {
+      analytics.push(await rebuildAnalytics(empresaId));
+    }
+
+    res.json({
+      ok: true,
+      totalEmpresas: empresas.length,
+      empresas,
+      analytics,
+    });
   } catch (error) {
     sendError(res, error);
   }
@@ -298,11 +331,13 @@ async function handleIndicatorItemsSearch(req, res) {
       }
     }
 
-    const items = snapshot.docs
+    const items = dedupeApiIndicatorItems(snapshot.docs
       .map((doc) => ({
         id: doc.id,
         ...doc.data(),
-      }))
+      })),
+      indicadorTipo,
+    )
       .sort(compareApiIndicatorItem)
       .slice(0, limit);
 
@@ -320,48 +355,149 @@ async function handleIndicatorItemsSearch(req, res) {
   }
 }
 
+async function handleAdminOnboardEmpresa(req, res) {
+  try {
+    const payload = normalizeOnboardEmpresaPayload(req.body || {});
+
+    initializeFirebase();
+
+    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const empresaDoc = {
+      empresa_id: payload.empresa_id,
+      nome: payload.empresa_nome,
+      empresa_nome: payload.empresa_nome,
+      status: "ativo",
+      ativo: true,
+      criado_em: timestamp,
+      atualizado_em: timestamp,
+    };
+    const lojaDoc = {
+      empresa_id: payload.empresa_id,
+      empresa_nome: payload.empresa_nome,
+      loja_id: payload.loja_id,
+      nome: payload.loja_nome,
+      status: "ativo",
+      ativo: true,
+      criado_em: timestamp,
+      atualizado_em: timestamp,
+    };
+
+    await Promise.all([
+      db.collection("empresas").doc(payload.empresa_id).set(empresaDoc, {merge: true}),
+      db.collection("lojas").doc(payload.loja_id).set(lojaDoc, {merge: true}),
+      ensureTenantUploadPrefix(payload.empresa_id),
+    ]);
+
+    const usuarios = [];
+    usuarios.push(await upsertAdminUser({
+      nome: payload.admin_nome,
+      email: payload.admin_email,
+      senha: payload.senha,
+      perfil: "admin",
+      role: "admin",
+      empresa_id: payload.empresa_id,
+      empresa_nome: payload.empresa_nome,
+      lojas_ids: [payload.loja_id],
+      lojas_nomes: [payload.loja_nome],
+      categorias_ids: payload.categorias_ids,
+      categorias_nomes: payload.categorias_nomes,
+      ativo: true,
+    }));
+
+    if (payload.consulta_email) {
+      usuarios.push(await upsertAdminUser({
+        nome: payload.consulta_nome,
+        email: payload.consulta_email,
+        senha: payload.senha,
+        perfil: "consulta",
+        role: "consulta",
+        empresa_id: payload.empresa_id,
+        empresa_nome: payload.empresa_nome,
+        lojas_ids: [payload.loja_id],
+        lojas_nomes: [payload.loja_nome],
+        categorias_ids: payload.categorias_ids,
+        categorias_nomes: payload.categorias_nomes,
+        ativo: true,
+      }));
+    }
+
+    res.status(201).json({
+      ok: true,
+      empresa: {
+        empresa_id: payload.empresa_id,
+        empresa_nome: payload.empresa_nome,
+      },
+      loja: {
+        loja_id: payload.loja_id,
+        nome: payload.loja_nome,
+      },
+      storage: {
+        upload_prefix: `uploads/${payload.empresa_id}/`,
+        nomes_esperados: [
+          `${payload.empresa_id}_produtos_DD_MM_AAAA.csv`,
+          `${payload.empresa_id}_estoque_DD_MM_AAAA.csv`,
+          `${payload.empresa_id}_vendas_DD_MM_AAAA.csv`,
+        ],
+      },
+      usuarios,
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function upsertAdminUser(payload) {
+  let userRecord;
+  let createdAuthUser = false;
+
+  try {
+    userRecord = await admin.auth().getUserByEmail(payload.email);
+    const authUpdate = {
+      displayName: payload.nome,
+      disabled: !payload.ativo,
+    };
+
+    if (payload.senha) {
+      authUpdate.password = payload.senha;
+    }
+
+    userRecord = await admin.auth().updateUser(userRecord.uid, authUpdate);
+  } catch (error) {
+    if (error.code !== "auth/user-not-found") {
+      throw error;
+    }
+
+    userRecord = await admin.auth().createUser({
+      email: payload.email,
+      password: payload.senha,
+      displayName: payload.nome,
+      disabled: !payload.ativo,
+    });
+    createdAuthUser = true;
+  }
+
+  await saveAdminUserAccess(userRecord.uid, payload, {merge: true});
+
+  return {
+    createdAuthUser,
+    uid: userRecord.uid,
+    ...publicAdminUserResponse(userRecord.uid, payload),
+  };
+}
+
 async function handleAdminCreateUser(req, res) {
   try {
     const payload = normalizeAdminUserPayload(req.body || {}, {isCreate: true});
 
     initializeFirebase();
 
-    let userRecord;
-    let createdAuthUser = false;
+    const usuario = await upsertAdminUser(payload);
 
-    try {
-      userRecord = await admin.auth().getUserByEmail(payload.email);
-      const authUpdate = {
-        displayName: payload.nome,
-        disabled: !payload.ativo,
-      };
-
-      if (payload.senha) {
-        authUpdate.password = payload.senha;
-      }
-
-      userRecord = await admin.auth().updateUser(userRecord.uid, authUpdate);
-    } catch (error) {
-      if (error.code !== "auth/user-not-found") {
-        throw error;
-      }
-
-      userRecord = await admin.auth().createUser({
-        email: payload.email,
-        password: payload.senha,
-        displayName: payload.nome,
-        disabled: !payload.ativo,
-      });
-      createdAuthUser = true;
-    }
-
-    await saveAdminUserAccess(userRecord.uid, payload, {merge: true});
-
-    res.status(createdAuthUser ? 201 : 200).json({
+    res.status(usuario.createdAuthUser ? 201 : 200).json({
       ok: true,
-      createdAuthUser,
-      uid: userRecord.uid,
-      usuario: publicAdminUserResponse(userRecord.uid, payload),
+      createdAuthUser: usuario.createdAuthUser,
+      uid: usuario.uid,
+      usuario,
     });
   } catch (error) {
     sendError(res, error);
@@ -461,6 +597,10 @@ async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
   const lojasNomes = normalizeDisplayArray(payload.lojas_nomes, lojasIds, DEFAULT_LOJA_LABELS);
   const categoriasNomes = normalizeDisplayArray(payload.categorias_nomes, categoriasIds, DEFAULT_CATEGORIA_LABELS);
   const ativo = payload.ativo !== false;
+  const lojasIdsTexto = lojasIds.join(",");
+  const lojasNomesTexto = lojasNomes.join(", ");
+  const categoriasIdsTexto = categoriasIds.join(",");
+  const categoriasNomesTexto = categoriasNomes.join(", ");
 
   const cleanPayload = {
     uid,
@@ -471,13 +611,18 @@ async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
     role: perfil,
     empresa_id: payload.empresa_id,
     empresa_nome: payload.empresa_nome || DEFAULT_EMPRESA_LABELS[payload.empresa_id] || payload.empresa_id,
-    lojas_ids: lojasIds,
-    lojas_nomes: lojasNomes,
-    lojas_texto: lojasNomes.join(", "),
-    categorias_ids: categoriasIds,
-    categoria_ids: categoriasIds,
-    categorias_nomes: categoriasNomes,
-    categorias_texto: categoriasNomes.join(", "),
+    lojas_ids: lojasIdsTexto,
+    lojas_nomes: lojasNomesTexto,
+    lojas_texto: lojasNomesTexto,
+    categorias_ids: categoriasIdsTexto,
+    categoria_ids: categoriasIdsTexto,
+    categorias_nomes: categoriasNomesTexto,
+    categorias_texto: categoriasNomesTexto,
+    lojas_ids_lista: lojasIds,
+    lojas_nomes_lista: lojasNomes,
+    categorias_ids_lista: categoriasIds,
+    categoria_ids_lista: categoriasIds,
+    categorias_nomes_lista: categoriasNomes,
     ativo,
     status_texto: getStatusLabel(ativo),
     status_color: ativo ? "#166534" : "#991B1B",
@@ -501,6 +646,10 @@ function publicAdminUserResponse(uid, payload) {
   const lojasNomes = normalizeDisplayArray(payload.lojas_nomes, lojasIds, DEFAULT_LOJA_LABELS);
   const categoriasNomes = normalizeDisplayArray(payload.categorias_nomes, categoriasIds, DEFAULT_CATEGORIA_LABELS);
   const ativo = payload.ativo !== false;
+  const lojasIdsTexto = lojasIds.join(",");
+  const lojasNomesTexto = lojasNomes.join(", ");
+  const categoriasIdsTexto = categoriasIds.join(",");
+  const categoriasNomesTexto = categoriasNomes.join(", ");
 
   return {
     uid,
@@ -511,13 +660,18 @@ function publicAdminUserResponse(uid, payload) {
     role: perfil,
     empresa_id: payload.empresa_id,
     empresa_nome: payload.empresa_nome || DEFAULT_EMPRESA_LABELS[payload.empresa_id] || payload.empresa_id,
-    lojas_ids: lojasIds,
-    lojas_nomes: lojasNomes,
-    lojas_texto: lojasNomes.join(", "),
-    categorias_ids: categoriasIds,
-    categoria_ids: categoriasIds,
-    categorias_nomes: categoriasNomes,
-    categorias_texto: categoriasNomes.join(", "),
+    lojas_ids: lojasIdsTexto,
+    lojas_nomes: lojasNomesTexto,
+    lojas_texto: lojasNomesTexto,
+    categorias_ids: categoriasIdsTexto,
+    categoria_ids: categoriasIdsTexto,
+    categorias_nomes: categoriasNomesTexto,
+    categorias_texto: categoriasNomesTexto,
+    lojas_ids_lista: lojasIds,
+    lojas_nomes_lista: lojasNomes,
+    categorias_ids_lista: categoriasIds,
+    categoria_ids_lista: categoriasIds,
+    categorias_nomes_lista: categoriasNomes,
     ativo,
     status_texto: getStatusLabel(ativo),
     status_color: ativo ? "#166534" : "#991B1B",
@@ -588,6 +742,104 @@ function normalizeAdminUserPayload(body, {isCreate}) {
   return payload;
 }
 
+function normalizeOnboardEmpresaPayload(body) {
+  const empresaId = normalizeTenantSlug(body.empresa_id || body.empresaId || body.tenant_id || body.slug);
+  const empresaNome = stringOrNull(body.empresa_nome || body.empresaNome || body.nome || body.company || body.empresa);
+  const lojaId = normalizeTenantSlug(body.loja_id || body.lojaId || body.loja || empresaId);
+  const lojaNome = stringOrNull(body.loja_nome || body.lojaNome || body.store || empresaNome);
+  const senha = stringOrNull(body.senha || body.password) || "235612";
+  const adminEmail = stringOrNull(body.admin_email || body.adminEmail || body.email_admin);
+  const consultaEmail = stringOrNull(body.consulta_email || body.consultaEmail || body.email_consulta);
+  const categoriasIds = normalizeStringArray(
+    body.categorias_ids || body.categoria_ids || body.categoriasIds || body.categoriaIds ||
+      ["mercearia", "bazar", "pereciveis", "limpeza", "higiene"],
+  );
+  const categoriasNomes = normalizeDisplayArray(
+    body.categorias_nomes || body.categoriasNomes,
+    categoriasIds,
+    DEFAULT_CATEGORIA_LABELS,
+  );
+
+  const payload = {
+    empresa_id: empresaId,
+    empresa_nome: empresaNome,
+    loja_id: lojaId,
+    loja_nome: lojaNome,
+    senha,
+    admin_email: adminEmail,
+    admin_nome: stringOrNull(body.admin_nome || body.adminNome) || `${empresaNome} Admin`,
+    consulta_email: consultaEmail,
+    consulta_nome: stringOrNull(body.consulta_nome || body.consultaNome) || `${empresaNome} Consulta`,
+    categorias_ids: categoriasIds,
+    categorias_nomes: categoriasNomes,
+  };
+
+  requireStringField(payload.empresa_id, "empresa_id");
+  requireStringField(payload.empresa_nome, "empresa_nome");
+  requireStringField(payload.loja_id, "loja_id");
+  requireStringField(payload.loja_nome, "loja_nome");
+  requireStringField(payload.admin_email, "admin_email");
+  requireStringField(payload.senha, "senha");
+
+  if (!isValidEmail(payload.admin_email)) {
+    const error = new Error("admin_email invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (payload.consulta_email && !isValidEmail(payload.consulta_email)) {
+    const error = new Error("consulta_email invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (payload.consulta_email && payload.consulta_email === payload.admin_email) {
+    const error = new Error("consulta_email deve ser diferente de admin_email.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (payload.senha.length < 6) {
+    const error = new Error("senha deve ter pelo menos 6 caracteres.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (payload.categorias_ids.length === 0) {
+    const error = new Error("categorias_ids deve ter pelo menos uma categoria.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return payload;
+}
+
+function normalizeTenantSlug(value) {
+  const normalized = stringOrNull(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const slug = normalized
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "")
+    .trim();
+
+  if (!slug || !/^[a-z0-9][a-z0-9_-]{2,62}$/.test(slug)) {
+    const error = new Error("empresa_id deve ter 3 a 63 caracteres, somente letras minusculas, numeros, _ ou -, e iniciar com letra/numero.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return slug;
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
 function requireStringField(value, fieldName) {
   if (!value) {
     const error = new Error(`${fieldName} obrigatorio.`);
@@ -652,6 +904,25 @@ function getProfileLabel(value) {
 
 function getStatusLabel(ativo) {
   return ativo ? "Ativo" : "Inativo";
+}
+
+async function ensureTenantUploadPrefix(empresaId) {
+  assertTenantScope(empresaId);
+  const bucket = getStorageBucket();
+  const file = bucket.file(`uploads/${empresaId}/.keep`);
+  const [exists] = await file.exists();
+
+  if (!exists) {
+    await file.save("", {
+      contentType: "text/plain",
+      metadata: {
+        metadata: {
+          generatedBy: "admin-onboard-empresa",
+          empresaId,
+        },
+      },
+    });
+  }
 }
 
 async function processPendingUploads(empresaId = null) {
@@ -1887,11 +2158,25 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     valor_parado_formatado: formatCurrency(item.valorParado),
     venda_perdida_estimada: round(item.vendaPerdidaEstimada),
     venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
+    ...ruptureLossFields(indicadorTipo, item),
     status_giro: item.statusGiro,
     status_giro_label: turnoverStatusLabel(item.statusGiro),
     status_estoque: item.statusEstoque,
     ...abcFields(item),
     ...lastSaleFields(item),
+  };
+}
+
+function ruptureLossFields(indicadorTipo, item) {
+  if (indicadorTipo !== "ruptura") {
+    return {};
+  }
+
+  return {
+    valor_perda_ruptura: round(item.vendaPerdidaEstimada),
+    valor_perda_ruptura_formatado: formatCurrency(item.vendaPerdidaEstimada),
+    perda_ruptura: round(item.vendaPerdidaEstimada),
+    perda_ruptura_formatada: formatCurrency(item.vendaPerdidaEstimada),
   };
 }
 
@@ -2247,6 +2532,23 @@ async function getTenantDocs(collectionName, empresaId) {
   return collectionRef.where("empresa_id", "==", empresaId).get();
 }
 
+async function listActiveEmpresaIds() {
+  const snapshot = await db.collection("empresas").get();
+  const ids = new Set();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data() || {};
+    const active = data.ativo !== false && data.status !== "inativo";
+    const empresaId = String(data.empresa_id || doc.id || "").trim();
+
+    if (active && empresaId) {
+      ids.add(empresaId);
+    }
+  }
+
+  return [...ids].sort();
+}
+
 function compareBusinessPriority(a, b) {
   const abcDiff = getAbcSortScore(b) - getAbcSortScore(a);
   if (abcDiff !== 0) {
@@ -2273,6 +2575,40 @@ function compareApiIndicatorItem(a, b) {
   }
 
   return compareBusinessPriority(a, b);
+}
+
+function dedupeApiIndicatorItems(items, indicadorTipo) {
+  const byProduct = new Map();
+
+  for (const item of items) {
+    const key = `${item.empresa_id || ""}:${item.indicador_tipo || indicadorTipo}:${item.produto_id || item.sku || item.id}`;
+    const current = byProduct.get(key);
+
+    if (!current || isPreferredIndicatorItem(item, current, indicadorTipo)) {
+      byProduct.set(key, item);
+    }
+  }
+
+  return [...byProduct.values()];
+}
+
+function isPreferredIndicatorItem(candidate, current, indicadorTipo) {
+  const canonicalPrefix = `${safeDocId(indicadorTipo)}_`;
+  const candidateCanonical = String(candidate.id || "").startsWith(canonicalPrefix);
+  const currentCanonical = String(current.id || "").startsWith(canonicalPrefix);
+
+  if (candidateCanonical !== currentCanonical) {
+    return candidateCanonical;
+  }
+
+  const candidateHasDisplayValue = Boolean(candidate.valor_formatado);
+  const currentHasDisplayValue = Boolean(current.valor_formatado);
+
+  if (candidateHasDisplayValue !== currentHasDisplayValue) {
+    return candidateHasDisplayValue;
+  }
+
+  return (candidate.prioridade_score || 0) > (current.prioridade_score || 0);
 }
 
 function getAbcSortScore(item) {
