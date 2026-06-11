@@ -34,6 +34,8 @@ const MAX_PRODUCTS_PER_ANALYTICS = Number(process.env.MAX_PRODUCTS_PER_ANALYTICS
 const MAX_STOCK_ROWS_PER_ANALYTICS = Number(process.env.MAX_STOCK_ROWS_PER_ANALYTICS || 5000);
 const MAX_SALES_ROWS_PER_ANALYTICS = Number(process.env.MAX_SALES_ROWS_PER_ANALYTICS || 20000);
 const MAX_ITEMS_PER_INDICATOR = Number(process.env.MAX_ITEMS_PER_INDICATOR || 250);
+const USER_MANAGEMENT_CACHE_TTL_MS = Number(process.env.USER_MANAGEMENT_CACHE_TTL_MS || 30000);
+const API_CACHE_TTL_MS = Number(process.env.API_CACHE_TTL_MS || 30000);
 const OUTLIER_STD_DEV_FACTOR = Number(process.env.OUTLIER_STD_DEV_FACTOR || 3);
 const OUTLIER_MEDIAN_FACTOR = Number(process.env.OUTLIER_MEDIAN_FACTOR || 3);
 const TREND_MIN_FACTOR = Number(process.env.TREND_MIN_FACTOR || 0.75);
@@ -132,6 +134,8 @@ const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo"
 const DATE_KEYS = ["data", "data_venda", "criado_em", "created_at", "ultima_venda_em"];
 
 let firestoreDb = null;
+const apiResponseCache = new Map();
+const userManagementCache = new Map();
 const db = new Proxy({}, {
   get(_target, property) {
     return getDb()[property];
@@ -161,7 +165,7 @@ app.get("/health", (_req, res) => {
   res.json({ok: true, status: "online"});
 });
 
-app.get("/debug-storage", requireApiKey, async (req, res) => {
+app.get("/debug-storage", requireApiKey, cacheApiResponse("debug-storage"), async (req, res) => {
   try {
     const empresaId = getEmpresaIdFromRequest(req);
     assertTenantScope(empresaId);
@@ -212,11 +216,11 @@ app.post("/run-analytics-all", requireApiKey, async (req, res) => {
   await handleAnalyticsAll(req, res);
 });
 
-app.get("/indicadores/itens", requireApiKey, async (req, res) => {
+app.get("/indicadores/itens", requireApiKey, cacheApiResponse("indicadores-itens"), async (req, res) => {
   await handleIndicatorItemsSearch(req, res);
 });
 
-app.get("/search-indicadores", requireApiKey, async (req, res) => {
+app.get("/search-indicadores", requireApiKey, cacheApiResponse("search-indicadores"), async (req, res) => {
   await handleIndicatorItemsSearch(req, res);
 });
 
@@ -246,6 +250,7 @@ app.patch("/admin/usuarios/:uid/status", requireApiKey, async (req, res) => {
 
 async function handleImport(req, res, shouldRunAnalytics) {
   try {
+    invalidateApiResponseCache();
     const requestedEmpresaId = getEmpresaIdFromRequest(req);
     assertTenantScope(requestedEmpresaId);
     const importacao = await processPendingUploads(requestedEmpresaId);
@@ -268,6 +273,7 @@ async function handleImport(req, res, shouldRunAnalytics) {
 
 async function handleAnalytics(req, res) {
   try {
+    invalidateApiResponseCache();
     const empresaId = getEmpresaIdFromRequest(req);
     assertTenantScope(empresaId);
     const summary = await rebuildAnalytics(empresaId);
@@ -279,6 +285,7 @@ async function handleAnalytics(req, res) {
 
 async function handleAnalyticsAll(_req, res) {
   try {
+    invalidateApiResponseCache();
     const empresas = await listActiveEmpresaIds();
     const analytics = [];
 
@@ -513,6 +520,7 @@ async function handleAdminCreateUser(req, res) {
     initializeFirebase();
 
     const usuario = await upsertAdminUser(payload);
+    invalidateUserManagementCache(payload.empresa_id);
 
     res.status(usuario.createdAuthUser ? 201 : 200).json({
       ok: true,
@@ -570,6 +578,7 @@ async function handleAdminUpdateUser(req, res) {
     mergedPayload.role = mergedPayload.perfil;
 
     await saveAdminUserAccess(uid, mergedPayload, {merge: true});
+    invalidateUserManagementCache(mergedPayload.empresa_id);
 
     res.json({
       ok: true,
@@ -594,6 +603,7 @@ async function handleAdminUpdateUserStatus(req, res) {
     const snapshot = await docRef.get();
     const currentData = snapshot.exists ? snapshot.data() : {};
     const ativo = typeof req.body.ativo === "boolean" ? req.body.ativo : currentData.ativo === false;
+    const empresaId = currentData.empresa_id || currentData.empresaId || null;
 
     initializeFirebase();
     await admin.auth().updateUser(uid, {disabled: !ativo});
@@ -604,6 +614,7 @@ async function handleAdminUpdateUserStatus(req, res) {
       status_bg_color: ativo ? "#DCFCE7" : "#FEE2E2",
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
+    invalidateUserManagementCache(empresaId);
 
     res.json({ok: true, uid, ativo});
   } catch (error) {
@@ -616,6 +627,12 @@ async function handleAdminUsersManagement(req, res) {
     const empresaId = getEmpresaIdFromRequest(req);
     assertTenantScope(empresaId);
     initializeFirebase();
+
+    const cachedResponse = getCachedUserManagementResponse(empresaId);
+    if (cachedResponse) {
+      res.json(cachedResponse);
+      return;
+    }
 
     const [empresaSnapshot, usuarios] = await Promise.all([
       db.collection("empresas").doc(empresaId).get(),
@@ -630,7 +647,7 @@ async function handleAdminUsersManagement(req, res) {
     const totalAtivos = usuariosGestao.filter((usuario) => usuario.ativo).length;
     const totalInativos = usuariosGestao.length - totalAtivos;
 
-    res.json({
+    const response = {
       ok: true,
       empresa: {
         empresa_id: empresaId,
@@ -647,17 +664,20 @@ async function handleAdminUsersManagement(req, res) {
       totalAtivos,
       totalInativos,
       usuarios: usuariosGestao,
-    });
+    };
+
+    setCachedUserManagementResponse(empresaId, response);
+    res.json(response);
   } catch (error) {
     sendError(res, error);
   }
 }
 
 async function listTenantUsers(empresaId) {
-  const snapshots = await Promise.all([
-    db.collection("usuarios").where("empresa_id", "==", empresaId).get(),
-    db.collection("usuarios").where("empresaId", "==", empresaId).get(),
-  ]);
+  const primarySnapshot = await buildTenantUsersQuery("empresa_id", empresaId).get();
+  const snapshots = primarySnapshot.empty ?
+    [await buildTenantUsersQuery("empresaId", empresaId).get()] :
+    [primarySnapshot];
   const usersById = new Map();
 
   for (const snapshot of snapshots) {
@@ -670,6 +690,63 @@ async function listTenantUsers(empresaId) {
   }
 
   return Array.from(usersById.values());
+}
+
+function buildTenantUsersQuery(fieldName, empresaId) {
+  return db.collection("usuarios")
+    .where(fieldName, "==", empresaId)
+    .select(
+      "uid",
+      "nome",
+      "name",
+      "displayName",
+      "email",
+      "empresa_nome",
+      "empresaNome",
+      "perfil",
+      "perfil_label",
+      "role",
+      "lojas_texto",
+      "ativo",
+      "status",
+      "status_texto",
+      "status_color",
+      "status_bg_color",
+    );
+}
+
+function getCachedUserManagementResponse(empresaId) {
+  const cached = userManagementCache.get(empresaId);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.createdAt > USER_MANAGEMENT_CACHE_TTL_MS) {
+    userManagementCache.delete(empresaId);
+    return null;
+  }
+
+  return cached.response;
+}
+
+function setCachedUserManagementResponse(empresaId, response) {
+  if (USER_MANAGEMENT_CACHE_TTL_MS <= 0) {
+    return;
+  }
+
+  userManagementCache.set(empresaId, {
+    createdAt: Date.now(),
+    response,
+  });
+}
+
+function invalidateUserManagementCache(empresaId) {
+  if (empresaId) {
+    userManagementCache.delete(empresaId);
+    return;
+  }
+
+  userManagementCache.clear();
 }
 
 function buildManagementUserResponse(usuario, empresaId, fallbackEmpresaNome) {
@@ -688,11 +765,15 @@ function buildManagementUserResponse(usuario, empresaId, fallbackEmpresaNome) {
     empresaNome,
     empresa: empresaNome,
     perfil,
+    perfil_label: usuario.perfil_label || getProfileLabel(perfil),
     role: perfil,
     tipo: getManagementUserType(perfil),
+    lojas_texto: usuario.lojas_texto || "",
     ativo,
     status: ativo ? "ativo" : "inativo",
     status_texto: getStatusLabel(ativo),
+    status_color: usuario.status_color || (ativo ? "#166534" : "#991B1B"),
+    status_bg_color: usuario.status_bg_color || (ativo ? "#DCFCE7" : "#FEE2E2"),
   };
 }
 
@@ -3051,6 +3132,49 @@ function requireApiKey(req, res, next) {
   }
 
   next();
+}
+
+function cacheApiResponse(cacheName) {
+  return (req, res, next) => {
+    if (API_CACHE_TTL_MS <= 0 || req.method !== "GET") {
+      next();
+      return;
+    }
+
+    const cacheKey = [
+      cacheName,
+      req.originalUrl,
+      req.header("x-empresa-id") || "",
+    ].join("|");
+    const cached = apiResponseCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt <= API_CACHE_TTL_MS) {
+      res.status(cached.statusCode).json(cached.body);
+      return;
+    }
+
+    if (cached) {
+      apiResponseCache.delete(cacheKey);
+    }
+
+    const originalJson = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        apiResponseCache.set(cacheKey, {
+          createdAt: Date.now(),
+          statusCode: res.statusCode,
+          body,
+        });
+      }
+
+      return originalJson(body);
+    };
+
+    next();
+  };
+}
+
+function invalidateApiResponseCache() {
+  apiResponseCache.clear();
 }
 
 async function requireAdminTenantAccess(req, res, next) {
