@@ -152,6 +152,7 @@ app.get("/", (_req, res) => {
       "/run-analytics-all",
       "/indicadores/itens",
       "/search-indicadores",
+      "/admin/usuarios/gestao",
     ],
   });
 });
@@ -225,6 +226,14 @@ app.post("/admin/onboard-empresa", requireApiKey, async (req, res) => {
 
 app.post("/admin/usuarios", requireApiKey, async (req, res) => {
   await handleAdminCreateUser(req, res);
+});
+
+app.get("/admin/usuarios/gestao", requireApiKey, requireAdminTenantAccess, async (req, res) => {
+  await handleAdminUsersManagement(req, res);
+});
+
+app.get("/admin/usuarios/resumo", requireApiKey, requireAdminTenantAccess, async (req, res) => {
+  await handleAdminUsersManagement(req, res);
 });
 
 app.patch("/admin/usuarios/:uid", requireApiKey, async (req, res) => {
@@ -600,6 +609,115 @@ async function handleAdminUpdateUserStatus(req, res) {
   } catch (error) {
     sendError(res, error);
   }
+}
+
+async function handleAdminUsersManagement(req, res) {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    assertTenantScope(empresaId);
+    initializeFirebase();
+
+    const [empresaSnapshot, usuarios] = await Promise.all([
+      db.collection("empresas").doc(empresaId).get(),
+      listTenantUsers(empresaId),
+    ]);
+    const empresaData = empresaSnapshot.exists ? empresaSnapshot.data() : {};
+    const empresaNome = empresaData.empresa_nome || empresaData.nome ||
+      DEFAULT_EMPRESA_LABELS[empresaId] || empresaId;
+    const usuariosGestao = usuarios
+      .map((usuario) => buildManagementUserResponse(usuario, empresaId, empresaNome))
+      .sort(compareManagementUsers);
+    const totalAtivos = usuariosGestao.filter((usuario) => usuario.ativo).length;
+    const totalInativos = usuariosGestao.length - totalAtivos;
+
+    res.json({
+      ok: true,
+      empresa: {
+        empresa_id: empresaId,
+        empresa_nome: empresaNome,
+        id: empresaId,
+        nome: empresaNome,
+      },
+      totais: {
+        usuarios: usuariosGestao.length,
+        ativos: totalAtivos,
+        inativos: totalInativos,
+      },
+      totalUsuarios: usuariosGestao.length,
+      totalAtivos,
+      totalInativos,
+      usuarios: usuariosGestao,
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function listTenantUsers(empresaId) {
+  const snapshots = await Promise.all([
+    db.collection("usuarios").where("empresa_id", "==", empresaId).get(),
+    db.collection("usuarios").where("empresaId", "==", empresaId).get(),
+  ]);
+  const usersById = new Map();
+
+  for (const snapshot of snapshots) {
+    for (const doc of snapshot.docs) {
+      usersById.set(doc.id, {
+        uid: doc.id,
+        ...doc.data(),
+      });
+    }
+  }
+
+  return Array.from(usersById.values());
+}
+
+function buildManagementUserResponse(usuario, empresaId, fallbackEmpresaNome) {
+  const perfil = usuario.perfil || usuario.role || "consulta";
+  const ativo = isManagementUserActive(usuario);
+  const empresaNome = usuario.empresa_nome || usuario.empresaNome || fallbackEmpresaNome;
+
+  return {
+    uid: usuario.uid,
+    id: usuario.uid,
+    nome: usuario.nome || usuario.name || usuario.displayName || "",
+    email: usuario.email || "",
+    empresa_id: empresaId,
+    empresaId,
+    empresa_nome: empresaNome,
+    empresaNome,
+    empresa: empresaNome,
+    perfil,
+    role: perfil,
+    tipo: getManagementUserType(perfil),
+    ativo,
+    status: ativo ? "ativo" : "inativo",
+    status_texto: getStatusLabel(ativo),
+  };
+}
+
+function isManagementUserActive(usuario) {
+  if (typeof usuario.ativo === "boolean") {
+    return usuario.ativo;
+  }
+
+  const status = String(usuario.status || usuario.status_texto || "").trim().toLowerCase();
+  if (status === "inativo" || status === "inactive" || status === "desativado") {
+    return false;
+  }
+
+  return true;
+}
+
+function getManagementUserType(perfil) {
+  return perfil === "admin" ? "admin" : "consumer";
+}
+
+function compareManagementUsers(a, b) {
+  return String(a.nome || a.email || a.uid).localeCompare(
+    String(b.nome || b.email || b.uid),
+    "pt-BR",
+  );
 }
 
 async function saveAdminUserAccess(uid, payload, options = {merge: true}) {
@@ -2933,6 +3051,41 @@ function requireApiKey(req, res, next) {
   }
 
   next();
+}
+
+async function requireAdminTenantAccess(req, res, next) {
+  try {
+    const empresaId = getEmpresaIdFromRequest(req);
+    assertTenantScope(empresaId);
+
+    const authHeader = req.header("authorization") || "";
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+      res.status(401).json({ok: false, error: "Token Firebase obrigatorio."});
+      return;
+    }
+
+    initializeFirebase();
+    const decodedToken = await admin.auth().verifyIdToken(match[1]);
+    const tokenEmpresaId = decodedToken.empresa_id || decodedToken.empresaId || null;
+    const role = decodedToken.role || decodedToken.perfil || "";
+    const isAdmin = decodedToken.admin === true || role === "admin";
+
+    if (!isAdmin) {
+      res.status(403).json({ok: false, error: "Apenas administradores podem acessar gestao de usuarios."});
+      return;
+    }
+
+    if (String(tokenEmpresaId || "") !== String(empresaId)) {
+      res.status(403).json({ok: false, error: "Usuario nao pertence a empresa solicitada."});
+      return;
+    }
+
+    req.authUser = decodedToken;
+    next();
+  } catch (error) {
+    sendError(res, error);
+  }
 }
 
 function getEmpresaIdFromRequest(req) {
