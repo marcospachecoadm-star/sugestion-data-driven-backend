@@ -39,6 +39,8 @@ const OUTLIER_MEDIAN_FACTOR = Number(process.env.OUTLIER_MEDIAN_FACTOR || 3);
 const TREND_MIN_FACTOR = Number(process.env.TREND_MIN_FACTOR || 0.75);
 const TREND_MAX_FACTOR = Number(process.env.TREND_MAX_FACTOR || 1.4);
 const TREND_CONFIRMATION_THRESHOLD = Number(process.env.TREND_CONFIRMATION_THRESHOLD || 1.15);
+const CRITICAL_STOCK_STATUSES = new Set(["ruptura", "estoque_negativo", "pre_ruptura"]);
+const ALERTABLE_STOCK_STATUSES = new Set(["ruptura", "estoque_negativo", "pre_ruptura", "abaixo_minimo"]);
 
 const PROFILE_LABELS = {
   admin: "Admin",
@@ -366,6 +368,11 @@ async function handleAdminOnboardEmpresa(req, res) {
       empresa_id: payload.empresa_id,
       nome: payload.empresa_nome,
       empresa_nome: payload.empresa_nome,
+      cnpj: payload.cnpj,
+      local: payload.local,
+      contratante_nome: payload.contratante_nome,
+      plano: payload.plano,
+      data_ativacao: payload.data_ativacao,
       status: "ativo",
       ativo: true,
       criado_em: timestamp,
@@ -426,6 +433,11 @@ async function handleAdminOnboardEmpresa(req, res) {
       empresa: {
         empresa_id: payload.empresa_id,
         empresa_nome: payload.empresa_nome,
+        cnpj: payload.cnpj,
+        local: payload.local,
+        contratante_nome: payload.contratante_nome,
+        plano: payload.plano,
+        data_ativacao: payload.data_ativacao,
       },
       loja: {
         loja_id: payload.loja_id,
@@ -747,6 +759,11 @@ function normalizeOnboardEmpresaPayload(body) {
   const empresaNome = stringOrNull(body.empresa_nome || body.empresaNome || body.nome || body.company || body.empresa);
   const lojaId = normalizeTenantSlug(body.loja_id || body.lojaId || body.loja || empresaId);
   const lojaNome = stringOrNull(body.loja_nome || body.lojaNome || body.store || empresaNome);
+  const cnpj = stringOrNull(body.cnpj || body.documento || body.document);
+  const local = stringOrNull(body.local || body.cidade || body.localidade || body.location);
+  const contratanteNome = stringOrNull(body.contratante_nome || body.contratanteNome || body.nome_contratante);
+  const plano = stringOrNull(body.plano || body.plan);
+  const dataAtivacao = stringOrNull(body.data_ativacao || body.dataAtivacao || body.activation_date);
   const senha = stringOrNull(body.senha || body.password) || "235612";
   const adminEmail = stringOrNull(body.admin_email || body.adminEmail || body.email_admin);
   const consultaEmail = stringOrNull(body.consulta_email || body.consultaEmail || body.email_consulta);
@@ -763,6 +780,11 @@ function normalizeOnboardEmpresaPayload(body) {
   const payload = {
     empresa_id: empresaId,
     empresa_nome: empresaNome,
+    cnpj,
+    local,
+    contratante_nome: contratanteNome,
+    plano,
+    data_ativacao: dataAtivacao,
     loja_id: lojaId,
     loja_nome: lojaNome,
     senha,
@@ -1173,7 +1195,7 @@ async function rebuildAnalytics(empresaId = null) {
 
   const docId = empresaId ? `${safeDocId(empresaId)}_dashboard` : "dashboard";
   await Promise.all([
-    db.collection(OUTPUT_COLLECTIONS.indicadoresResumo).doc(docId).set(resumo, {merge: true}),
+    db.collection(OUTPUT_COLLECTIONS.indicadoresResumo).doc(docId).set(resumo),
     replaceOutputCollection(OUTPUT_COLLECTIONS.indicadoresItens, indicadoresItens, empresaId),
     replaceOutputCollection(OUTPUT_COLLECTIONS.alertas, alertas, empresaId),
     replaceOutputCollection(OUTPUT_COLLECTIONS.acoesRecomendadas, acoesRecomendadas, empresaId),
@@ -1500,7 +1522,7 @@ function calculateTurnoverStatus(item) {
     return item.estoqueAtual > 0 ? "sem_vendas" : "sem_giro";
   }
 
-  if (item.statusEstoque === "ruptura" || item.statusEstoque === "critico") {
+  if (isRuptureItem(item) || isPreRuptureItem(item)) {
     return "critico";
   }
 
@@ -1508,7 +1530,7 @@ function calculateTurnoverStatus(item) {
     return "estoque_negativo";
   }
 
-  if (item.statusEstoque === "atencao" || item.statusEstoque === "abaixo_minimo") {
+  if (isBelowMinimumItem(item)) {
     return "atencao";
   }
 
@@ -1533,7 +1555,43 @@ function isRuptureItem(item) {
 }
 
 function isPreRuptureItem(item) {
-  return ["abaixo_minimo", "critico", "atencao"].includes(item.statusEstoque);
+  return item.giroDiario > 0 &&
+    item.estoqueAtual > 0 &&
+    item.coberturaDias !== null &&
+    item.coberturaDias !== undefined &&
+    item.coberturaDias <= WARNING_COVERAGE_DAYS;
+}
+
+function isBelowMinimumItem(item) {
+  return item.estoqueMinimo > 0 && item.estoqueAtual < item.estoqueMinimo;
+}
+
+function getOperationalStockStatus(item) {
+  if (item.statusEstoque === "estoque_negativo") {
+    return "estoque_negativo";
+  }
+
+  if (isRuptureItem(item)) {
+    return "ruptura";
+  }
+
+  if (isPreRuptureItem(item)) {
+    return "pre_ruptura";
+  }
+
+  if (isBelowMinimumItem(item)) {
+    return "abaixo_minimo";
+  }
+
+  return item.statusEstoque || "normal";
+}
+
+function isCriticalStockItem(item) {
+  return CRITICAL_STOCK_STATUSES.has(getOperationalStockStatus(item));
+}
+
+function isAlertableStockItem(item) {
+  return ALERTABLE_STOCK_STATUSES.has(getOperationalStockStatus(item));
 }
 
 function calculatePreRuptureImpactValue(item) {
@@ -1624,9 +1682,9 @@ function calculatePriorityScore(item) {
     score += 45;
   } else if (item.statusEstoque === "estoque_negativo") {
     score += 42;
-  } else if (item.statusEstoque === "critico") {
+  } else if (isPreRuptureItem(item)) {
     score += 35;
-  } else if (item.statusEstoque === "abaixo_minimo" || item.statusEstoque === "atencao") {
+  } else if (isBelowMinimumItem(item)) {
     score += 20;
   } else if (item.statusEstoque === "sem_vendas") {
     score += item.abcClasse === "A" ? 36 : 15;
@@ -1710,6 +1768,8 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
   const stockoutProducts = activeProducts.filter((item) => item.estoqueAtual <= 0);
   const ruptureProducts = metricsList.filter(isRuptureItem);
   const preRuptureProducts = metricsList.filter(isPreRuptureItem);
+  const criticalProducts = metricsList.filter(isCriticalStockItem);
+  const belowMinimumProducts = metricsList.filter(isBelowMinimumItem);
   const totalVendas = sum(metricsList, (item) => item.receita45d);
   const vendaPerdida = sum(metricsList, (item) => item.vendaPerdidaEstimada);
   const perdaRuptura = sum(ruptureProducts, (item) => item.vendaPerdidaEstimada);
@@ -1747,6 +1807,13 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     metodologia: "Nielsen OSA",
     metodologia_indicadores:
       "Nielsen OSA 45 dias: disponibilidade em gondola, risco de ruptura, cobertura, venda perdida e acao por SKU.",
+    regra_itens_criticos:
+      "Itens criticos = ruptura + estoque negativo + pre-ruptura. Pre-ruptura e produto com venda/giro maior do que a cobertura de estoque suporta.",
+    consistencia_indicadores: {
+      itens_criticos_inclui_pre_ruptura: true,
+      itens_criticos_maior_ou_igual_pre_ruptura: criticalProducts.length >= preRuptureProducts.length,
+      fonte_resumo: "metricsList via regras isCriticalStockItem, isPreRuptureItem e isBelowMinimumItem",
+    },
     meta_osa: OSA_TARGET_PERCENT,
     meta_osa_formatada: formatPercent(OSA_TARGET_PERCENT),
     disponibilidade_osa: round(osa),
@@ -1773,19 +1840,26 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     giro_medio_ajustado: round(giroMedioAjustado),
     giro_medio_dias: round(coberturaMedia),
     cobertura_media_dias: round(coberturaMedia),
-    itens_criticos: metricsList.filter((item) => ["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)).length,
-    itens_abaixo_minimo: metricsList.filter((item) => item.statusEstoque === "abaixo_minimo").length,
+    itens_criticos: criticalProducts.length,
+    itens_abaixo_minimo: belowMinimumProducts.length,
+    abaixo_minimo: belowMinimumProducts.length,
     itens_pre_ruptura: preRuptureProducts.length,
+    pre_ruptura: preRuptureProducts.length,
     itens_pre_ruptura_classe_a: countByAbc(preRuptureProducts, "A"),
+    pre_ruptura_classe_a: countByAbc(preRuptureProducts, "A"),
     itens_pre_ruptura_classe_b: countByAbc(preRuptureProducts, "B"),
+    pre_ruptura_classe_b: countByAbc(preRuptureProducts, "B"),
     itens_pre_ruptura_classe_c: countByAbc(preRuptureProducts, "C"),
+    pre_ruptura_classe_c: countByAbc(preRuptureProducts, "C"),
     valor_pre_ruptura: round(valorPreRuptura),
     valor_pre_ruptura_formatado: formatCurrency(valorPreRuptura),
     itens_ruptura: ruptureProducts.length,
+    ruptura: ruptureProducts.length,
     itens_ruptura_classe_a: countByAbc(ruptureProducts, "A"),
     itens_ruptura_classe_b: countByAbc(ruptureProducts, "B"),
     itens_ruptura_classe_c: countByAbc(ruptureProducts, "C"),
     itens_estoque_negativo: itensEstoqueNegativo.length,
+    estoque_negativo: itensEstoqueNegativo.length,
     itens_estoque_negativo_classe_a: countByAbc(itensEstoqueNegativo, "A"),
     itens_estoque_negativo_classe_b: countByAbc(itensEstoqueNegativo, "B"),
     itens_estoque_negativo_classe_c: countByAbc(itensEstoqueNegativo, "C"),
@@ -1796,6 +1870,7 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     perda_estimada_estoque_negativo: round(valorTotalItensEstoqueNegativo),
     perda_estimada_estoque_negativo_formatada: formatCurrency(valorTotalItensEstoqueNegativo),
     alertas_pendentes: alertas.length,
+    alertas: alertas.length,
     itens_sem_vendas: itensSemVendas.length,
     itens_sem_vendas_classe_a: countByAbc(itensSemVendas, "A"),
     itens_sem_vendas_classe_b: countByAbc(itensSemVendas, "B"),
@@ -1821,7 +1896,9 @@ function buildSummary(empresaId, metricsList, alertas, sugestoesCompra, acoesRec
     investimento_sugerido: round(investimento),
     investimento_sugerido_formatado: formatCurrency(investimento),
     acoes_recomendadas: acoesRecomendadas.length,
+    acao_recomendada: acoesRecomendadas.length,
     sugestoes_compra: sugestoesCompra.length,
+    sugestao_compra: sugestoesCompra.length,
     reposicao_urgente: sugestoesCompra.filter((item) => item.prioridade === "critica" || item.prioridade === "alta").length,
     abc_metodologia: "Curva ABC Nielsen/Pareto por faturamento acumulado: A ate 80%, B ate 95%, C ate 100%.",
     abc_itens_classe_a: abcResumo.classeA,
@@ -1855,14 +1932,15 @@ function buildAlerts(metricsList) {
   const alerts = [];
 
   for (const item of metricsList) {
-    const alertType = item.statusEstoque;
+    const alertType = getOperationalStockStatus(item);
 
-    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(alertType)) {
+    if (isAlertableStockItem(item)) {
       alerts.push({
         id: `${safeDocId(item.produtoId)}_${alertType}`,
         empresa_id: item.empresaId || null,
         indicador_tipo: getIndicatorTypeForStockStatus(alertType),
         tipo: alertType,
+        status_operacional: alertType,
         produto_id: item.produtoId,
         produto_nome: item.produtoNome,
         sku: item.sku,
@@ -1889,6 +1967,11 @@ function buildAlerts(metricsList) {
         giro_45d_formatado: `${round(item.giroDiario * WINDOW_DAYS)} un em 45 dias`,
         status_giro: item.statusGiro,
         status_giro_label: turnoverStatusLabel(item.statusGiro),
+        status_estoque: item.statusEstoque,
+        classificacao_estoque: alertType,
+        critico: isCriticalStockItem(item),
+        pre_ruptura: isPreRuptureItem(item),
+        abaixo_minimo: isBelowMinimumItem(item),
         ...abcFields(item),
         venda_perdida_estimada: round(item.vendaPerdidaEstimada),
         venda_perdida_estimada_formatada: formatCurrency(item.vendaPerdidaEstimada),
@@ -1908,6 +1991,14 @@ function getIndicatorTypeForStockStatus(statusEstoque) {
     return "estoque_negativo";
   }
 
+  if (statusEstoque === "pre_ruptura") {
+    return "pre_ruptura";
+  }
+
+  if (statusEstoque === "ruptura") {
+    return "ruptura";
+  }
+
   if (statusEstoque === "abaixo_minimo") {
     return "abaixo_minimo";
   }
@@ -1922,7 +2013,7 @@ function buildRecommendedActions(metricsList) {
   const valorTotalItensSemVenda = sum(itensSemVendas, (item) => item.valorParado);
 
   for (const item of metricsList) {
-    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
+    if (isAlertableStockItem(item)) {
       const action = getStockActionByAbc(item);
       actions.push(toActionDoc(item, {
         tipo: action.tipo,
@@ -2032,12 +2123,12 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
       descricao: "Giro, estoque e cobertura no periodo de 45 dias",
     }));
 
-    if (["ruptura", "estoque_negativo", "critico", "abaixo_minimo", "atencao"].includes(item.statusEstoque)) {
+    if (isCriticalStockItem(item)) {
       criticalItems.push(toIndicatorItemDoc("itens_criticos", item, {
-        status: isPreRuptureItem(item) ? "pre_ruptura" : item.statusEstoque,
+        status: getOperationalStockStatus(item),
         valor: isPreRuptureItem(item) ? calculatePreRuptureImpactValue(item) : item.estoqueAtual,
         valorFormatado: isPreRuptureItem(item) ? formatCurrency(calculatePreRuptureImpactValue(item)) : `${round(item.coberturaDias || 0)} dias`,
-        descricao: getActionDescription(item),
+        descricao: getActionDescription({...item, statusEstoque: getOperationalStockStatus(item)}),
       }));
     }
 
@@ -2064,7 +2155,7 @@ function buildIndicatorItems(metricsList, alertas, acoesRecomendadas) {
         status: "pre_ruptura",
         valor: calculatePreRuptureImpactValue(item),
         valorFormatado: formatCurrency(calculatePreRuptureImpactValue(item)),
-        descricao: getActionDescription(item),
+        descricao: getActionDescription({...item, statusEstoque: "pre_ruptura"}),
       }));
     }
 
@@ -2115,6 +2206,7 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     prioridade: item.prioridade,
     prioridade_score: round(item.prioridadeScore),
     status: options.status,
+    status_operacional: options.status,
     titulo: item.produtoNome,
     descricao: options.descricao,
     recomendacao_abc: getAbcRecommendation(item),
@@ -2162,6 +2254,10 @@ function toIndicatorItemDoc(indicadorTipo, item, options) {
     status_giro: item.statusGiro,
     status_giro_label: turnoverStatusLabel(item.statusGiro),
     status_estoque: item.statusEstoque,
+    classificacao_estoque: getOperationalStockStatus(item),
+    critico: isCriticalStockItem(item),
+    pre_ruptura: isPreRuptureItem(item),
+    abaixo_minimo: isBelowMinimumItem(item),
     ...abcFields(item),
     ...lastSaleFields(item),
   };
@@ -2344,12 +2440,16 @@ function getActionDescription(item) {
     return "Produto com venda recente e estoque zerado.";
   }
 
+  if (item.statusEstoque === "pre_ruptura") {
+    return "Pre-ruptura: venda maior do que o estoque suporta dentro da cobertura segura.";
+  }
+
   if (item.statusEstoque === "critico") {
     return `Pre-ruptura: cobertura menor ou igual a ${CRITICAL_COVERAGE_DAYS} dias.`;
   }
 
   if (item.statusEstoque === "abaixo_minimo") {
-    return "Pre-ruptura: estoque abaixo do minimo indicado para compra.";
+    return "Estoque abaixo do minimo cadastrado.";
   }
 
   if (item.statusEstoque === "atencao") {
@@ -2363,8 +2463,9 @@ function alertTitle(statusEstoque) {
   const titles = {
     estoque_negativo: "Estoque negativo",
     ruptura: "Ruptura detectada",
+    pre_ruptura: "Pre-ruptura",
     critico: "Pre-ruptura",
-    abaixo_minimo: "Pre-ruptura",
+    abaixo_minimo: "Abaixo do minimo",
     atencao: "Pre-ruptura",
   };
 
@@ -2384,10 +2485,11 @@ async function replaceOutputCollection(collectionName, rows, empresaId = null) {
   for (const row of rows) {
     const rawId = row.id || row.produto_id || cryptoSafeId();
     const tenantPrefix = empresaId ? `${safeDocId(empresaId)}_` : "";
-    const rowWithSearch = addSearchText(row);
+    const normalizedRow = normalizeOutputRow(collectionName, row);
+    const rowWithSearch = addSearchText(normalizedRow);
     await writer.set(collectionRef.doc(`${tenantPrefix}${safeDocId(rawId)}`), {
       ...rowWithSearch,
-      empresa_id: empresaId || row.empresa_id || null,
+      empresa_id: empresaId || normalizedRow.empresa_id || null,
       atualizado_em: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
@@ -2416,6 +2518,49 @@ async function getCurrentOutputDocs(collectionRef, empresaId) {
   }
 
   return Array.from(docsByPath.values());
+}
+
+function normalizeOutputRow(collectionName, row) {
+  if (collectionName !== OUTPUT_COLLECTIONS.indicadoresItens) {
+    return row;
+  }
+
+  return {
+    id: row.id || `${safeDocId(row.indicador_tipo || "item")}_${safeDocId(row.produto_id || row.sku || cryptoSafeId())}`,
+    empresa_id: row.empresa_id || null,
+    indicador_tipo: row.indicador_tipo || "item",
+    produto_id: row.produto_id || row.sku || "",
+    produto_nome: row.produto_nome || row.titulo || "",
+    sku: row.sku || "",
+    categoria: row.categoria || "",
+    fornecedor: row.fornecedor || "",
+    prioridade: row.prioridade || "baixa",
+    prioridade_score: round(row.prioridade_score || 0),
+    status: row.status || row.status_estoque || row.tipo || "",
+    titulo: row.titulo || row.produto_nome || "",
+    descricao: row.descricao || "",
+    tipo: row.tipo || row.indicador_tipo || "",
+    valor: round(row.valor || row.venda_perdida_estimada || row.valor_impacto || row.valor_parado || row.investimento_sugerido || 0),
+    valor_formatado: row.valor_formatado ||
+      row.venda_perdida_estimada_formatada ||
+      row.valor_impacto_formatado ||
+      row.valor_parado_formatado ||
+      row.investimento_sugerido_formatado ||
+      "",
+    vendas_45d: round(row.vendas_45d || 0),
+    vendas_45d_formatado: row.vendas_45d_formatado || `${round(row.vendas_45d || 0)} un`,
+    estoque_atual: roundUnits(row.estoque_atual || 0),
+    estoque_minimo: roundUnits(row.estoque_minimo || 0),
+    cobertura_dias: row.cobertura_dias === undefined ? null : row.cobertura_dias,
+    cobertura_dias_formatado: row.cobertura_dias_formatado || "",
+    giro_diario: round(row.giro_diario || 0),
+    giro_diario_formatado: row.giro_diario_formatado || "",
+    venda_perdida_estimada: round(row.venda_perdida_estimada || 0),
+    venda_perdida_estimada_formatada: row.venda_perdida_estimada_formatada || formatCurrency(row.venda_perdida_estimada || 0),
+    valor_parado: round(row.valor_parado || 0),
+    valor_parado_formatado: row.valor_parado_formatado || formatCurrency(row.valor_parado || 0),
+    ...row,
+  };
 }
 
 function addSearchText(row) {
@@ -2625,10 +2770,11 @@ function getAbcSortScore(item) {
 }
 
 function getStatusSortScore(item) {
-  const status = item.statusEstoque || item.status_estoque || item.status || "";
+  const status = item.status_operacional || item.classificacao_estoque || item.statusEstoque || item.status_estoque || item.status || "";
   const scores = {
     ruptura: 60,
     estoque_negativo: 55,
+    pre_ruptura: 52,
     sem_vendas: 50,
     critico: 45,
     abaixo_minimo: 45,
