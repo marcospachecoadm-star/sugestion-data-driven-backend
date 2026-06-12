@@ -3182,18 +3182,20 @@ async function requireAdminTenantAccess(req, res, next) {
     const empresaId = getEmpresaIdFromRequest(req);
     assertTenantScope(empresaId);
 
-    const authHeader = req.header("authorization") || "";
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (!match) {
-      res.status(401).json({ok: false, error: "Token Firebase obrigatorio."});
+    const firebaseToken = getFirebaseTokenFromRequest(req);
+    if (!firebaseToken) {
+      res.status(401).json({
+        ok: false,
+        error: "Token Firebase obrigatorio. Envie Authorization: Bearer <token> ou header x-firebase-token.",
+      });
       return;
     }
 
     initializeFirebase();
-    const decodedToken = await admin.auth().verifyIdToken(match[1]);
+    const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
     const tokenEmpresaId = decodedToken.empresa_id || decodedToken.empresaId || null;
     const role = decodedToken.role || decodedToken.perfil || "";
-    const isAdmin = decodedToken.admin === true || role === "admin";
+    const isAdmin = decodedToken.admin === true || role === "admin" || role === "gestor";
 
     if (!isAdmin) {
       res.status(403).json({ok: false, error: "Apenas administradores podem acessar gestao de usuarios."});
@@ -3210,6 +3212,24 @@ async function requireAdminTenantAccess(req, res, next) {
   } catch (error) {
     sendError(res, error);
   }
+}
+
+function getFirebaseTokenFromRequest(req) {
+  const authHeader = req.header("authorization") || "";
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch && bearerMatch[1]) {
+    return bearerMatch[1].trim();
+  }
+
+  const directHeader = req.header("x-firebase-token") ||
+    req.header("x-id-token") ||
+    req.header("x-auth-token");
+  if (directHeader) {
+    return String(directHeader).trim();
+  }
+
+  const queryToken = req.query.token || req.query.idToken || req.query.authToken;
+  return queryToken ? String(queryToken).trim() : null;
 }
 
 function getEmpresaIdFromRequest(req) {
