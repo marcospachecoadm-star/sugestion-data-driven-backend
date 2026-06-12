@@ -1,8 +1,7 @@
-const csv = require("csv-parser");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const {converterValorCsv, safeDocId} = require("../analytics/utils");
+const {safeDocId} = require("../analytics/utils");
 const {
   admin,
   getDb,
@@ -10,6 +9,13 @@ const {
   BatchWriter,
 } = require("../repositories/firebaseRepository");
 const {normalizeEmpresaId} = require("./tenantService");
+const {
+  parseImportFile,
+  isSupportedImportFile,
+  getImportFileExtension,
+} = require("./importFileNormalizer");
+
+const MAX_IMPORT_ROWS_PER_FILE = Number(process.env.MAX_CSV_ROWS_PER_FILE || 5000);
 
 async function processarUploadsPendentes(empresaId = null) {
   empresaId = normalizeEmpresaId(empresaId);
@@ -19,7 +25,7 @@ async function processarUploadsPendentes(empresaId = null) {
   const resultados = [];
 
   for (const file of files) {
-    if (file.name.endsWith("/") || !file.name.toLowerCase().endsWith(".csv")) {
+    if (file.name.endsWith("/") || !isSupportedImportFile(file.name)) {
       continue;
     }
 
@@ -34,6 +40,10 @@ async function processarUploadsPendentes(empresaId = null) {
 
 async function processarArquivoCsv(bucket, filePath) {
   if (!filePath || !filePath.startsWith("uploads/")) {
+    return {status: "ignorado", filePath};
+  }
+
+  if (!isSupportedImportFile(filePath)) {
     return {status: "ignorado", filePath};
   }
 
@@ -81,7 +91,12 @@ async function processarArquivoCsv(bucket, filePath) {
 
     await bucket.file(currentFilePath).download({destination: tempFilePath});
 
-    const linhas = await lerCsv(tempFilePath, empresaId);
+    const linhas = await parseImportFile(
+      tempFilePath,
+      dadosArquivo.tipoArquivo,
+      empresaId,
+      {maxRows: MAX_IMPORT_ROWS_PER_FILE},
+    );
     await salvarLinhasNoFirestore(nomeColecao, linhas);
     await moverArquivoSePossivel(bucket, currentFilePath, destinoProcessada);
 
@@ -215,7 +230,8 @@ async function moverArquivoSePossivel(bucket, origem, destino) {
 function identificarArquivo(filePath) {
   const partes = filePath.split("/");
   const fileName = path.basename(filePath);
-  const nomeSemExtensao = path.basename(fileName, ".csv");
+  const extensao = getImportFileExtension(fileName);
+  const nomeSemExtensao = path.basename(fileName, extensao);
 
   const match = nomeSemExtensao.match(
     /^(.+)_(vendas|estoque|produto|produtos)_\d{2}_\d{2}_\d{4}$/i,
@@ -254,32 +270,6 @@ function obterNomeColecao(tipoArquivo) {
   }
 
   throw new Error(`Tipo de arquivo invalido: ${tipoArquivo}`);
-}
-
-function lerCsv(tempFilePath, empresaId) {
-  return new Promise((resolve, reject) => {
-    const linhas = [];
-
-    fs.createReadStream(tempFilePath)
-      .pipe(csv({
-        separator: ",",
-        mapHeaders: ({header}) => header.trim().replace(/^\uFEFF/, ""),
-        mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
-      }))
-      .on("data", (data) => {
-        const itemTratado = {};
-
-        for (const chaveOriginal in data) {
-          const chave = chaveOriginal.trim().replace(/^\uFEFF/, "");
-          itemTratado[chave] = converterValorCsv(chave, data[chaveOriginal]);
-        }
-
-        itemTratado.empresa_id = empresaId;
-        linhas.push(itemTratado);
-      })
-      .on("end", () => resolve(linhas))
-      .on("error", reject);
-  });
 }
 
 async function salvarLinhasNoFirestore(nomeColecao, linhas) {

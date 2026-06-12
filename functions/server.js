@@ -9,10 +9,14 @@ try {
 const cors = require("cors");
 const express = require("express");
 const admin = require("firebase-admin");
-const csv = require("csv-parser");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const {
+  parseImportFile,
+  isSupportedImportFile,
+  getImportFileExtension,
+} = require("./services/importFileNormalizer");
 
 const app = express();
 app.use(cors());
@@ -133,6 +137,91 @@ const UNIT_PRICE_KEYS = ["preco_unitario", "valor_unitario", "preco", "valor_pro
 const UNIT_COST_KEYS = ["custo_unitario", "preco_compra", "preco_custo", "custo", "preco", "preco_de_custo"];
 const DATE_KEYS = ["data", "data_venda", "criado_em", "created_at", "ultima_venda_em"];
 
+const CSV_COLUMN_ALIASES = {
+  produtos: {
+    produto_id: [
+      "produto_id", "id_produto", "codigo_produto", "cod_produto", "codproduto", "cod_prod",
+      "codprod", "codigo", "sku", "ean", "gtin", "codigo_barras", "cod_barras",
+      "referencia", "ref",
+    ],
+    produto_nome: [
+      "produto_nome", "nome_produto", "descricao_produto", "descricao", "nome", "produto",
+      "item", "mercadoria", "nome_item",
+    ],
+    categoria: ["categoria", "departamento", "grupo", "secao", "familia", "linha"],
+    fornecedor: ["fornecedor", "distribuidor", "supplier", "fabricante"],
+    marca: ["marca", "brand"],
+    custo_unitario: [
+      "custo_unitario", "custo", "preco_custo", "preco_compra", "valor_custo",
+      "custo_medio", "cmv",
+    ],
+    estoque_minimo: ["estoque_minimo", "minimo", "estoque_min", "min", "qtd_minima", "quantidade_minima"],
+  },
+  estoque: {
+    produto_id: [
+      "produto_id", "id_produto", "codigo_produto", "cod_produto", "codproduto", "cod_prod",
+      "codprod", "codigo", "sku", "ean", "gtin", "codigo_barras", "cod_barras",
+      "referencia", "ref",
+    ],
+    produto_nome: [
+      "produto_nome", "nome_produto", "descricao_produto", "descricao", "nome", "produto",
+      "item", "mercadoria", "nome_item",
+    ],
+    estoque_atual: [
+      "estoque_atual", "estoque", "saldo", "saldo_estoque", "quantidade_estoque",
+      "quantidade", "qtd", "qtde", "qtd_estoque", "estoque_disponivel", "estoque_total",
+    ],
+    estoque_minimo: ["estoque_minimo", "minimo", "estoque_min", "min", "qtd_minima", "quantidade_minima"],
+    custo_unitario: [
+      "custo_unitario", "custo", "preco_custo", "preco_compra", "valor_custo",
+      "custo_medio", "cmv",
+    ],
+  },
+  vendas: {
+    venda_id: ["venda_id", "id_venda", "codigo_venda", "cupom", "numero_cupom", "documento", "pedido"],
+    produto_id: [
+      "produto_id", "id_produto", "codigo_produto", "cod_produto", "codproduto", "cod_prod",
+      "codprod", "codigo", "sku", "ean", "gtin", "codigo_barras", "cod_barras",
+      "referencia", "ref",
+    ],
+    produto_nome: [
+      "produto_nome", "nome_produto", "descricao_produto", "descricao", "nome", "produto",
+      "item", "mercadoria", "nome_item",
+    ],
+    data: ["data", "data_venda", "dt_venda", "emissao", "data_emissao", "created_at", "criado_em"],
+    quantidade: [
+      "quantidade", "quantidade_vendida", "qtd", "qtde", "qty", "qtd_vendida",
+      "qtde_vendida", "unidades", "volume",
+    ],
+    total: [
+      "total", "valor_total", "total_vendido", "receita", "valor", "valor_venda",
+      "preco_total", "vl_total", "vlr_total", "valor_liquido", "valor_bruto",
+      "total_item", "subtotal",
+    ],
+    preco_unitario: ["preco_unitario", "valor_unitario", "preco", "preco_venda", "valor_produto", "unitario"],
+    custo_unitario: [
+      "custo_unitario", "custo", "preco_custo", "preco_compra", "valor_custo",
+      "custo_medio", "cmv",
+    ],
+  },
+};
+
+const CSV_REQUIRED_COLUMNS = {
+  produtos: [
+    {field: "produto_id", label: "codigo/sku do produto"},
+    {field: "produto_nome", label: "nome/descricao do produto"},
+  ],
+  estoque: [
+    {field: "produto_id", label: "codigo/sku do produto"},
+    {field: "estoque_atual", label: "estoque/quantidade atual"},
+  ],
+  vendas: [
+    {field: "produto_id", label: "codigo/sku do produto"},
+    {field: "data", label: "data da venda"},
+    {field: "quantidade", label: "quantidade vendida"},
+  ],
+};
+
 let firestoreDb = null;
 const apiResponseCache = new Map();
 const userManagementCache = new Map();
@@ -228,7 +317,7 @@ app.post("/admin/onboard-empresa", requireApiKey, async (req, res) => {
   await handleAdminOnboardEmpresa(req, res);
 });
 
-app.post("/admin/usuarios", requireApiKey, async (req, res) => {
+app.post("/admin/usuarios", requireApiKey, requireAdminUserContext, async (req, res) => {
   await handleAdminCreateUser(req, res);
 });
 
@@ -515,7 +604,10 @@ async function upsertAdminUser(payload) {
 
 async function handleAdminCreateUser(req, res) {
   try {
-    const payload = normalizeAdminUserPayload(req.body || {}, {isCreate: true});
+    const payload = normalizeAdminUserPayload(req.body || {}, {isCreate: true, requireEmpresa: false});
+    const adminContext = req.adminUserContext;
+    payload.empresa_id = adminContext.empresa_id;
+    payload.empresa_nome = adminContext.empresa_nome;
 
     initializeFirebase();
 
@@ -890,7 +982,7 @@ function publicAdminUserResponse(uid, payload) {
   };
 }
 
-function normalizeAdminUserPayload(body, {isCreate}) {
+function normalizeAdminUserPayload(body, {isCreate, requireEmpresa = true}) {
   const perfil = stringOrNull(body.perfil || body.role);
   const payload = {
     nome: stringOrNull(body.nome || body.name || body.displayName),
@@ -918,14 +1010,18 @@ function normalizeAdminUserPayload(body, {isCreate}) {
     requireStringField(payload.email, "email");
     requireStringField(payload.senha, "senha");
     requireStringField(payload.perfil, "perfil");
-    requireStringField(payload.empresa_id, "empresa_id");
+    if (requireEmpresa) {
+      requireStringField(payload.empresa_id, "empresa_id");
+    }
     requireArrayField(payload.lojas_ids, "lojas_ids");
     requireArrayField(payload.categorias_ids, "categorias_ids");
     requireBooleanField(payload.ativo, "ativo");
   } else {
     requireStringField(payload.nome, "nome");
     requireStringField(payload.perfil, "perfil");
-    requireStringField(payload.empresa_id, "empresa_id");
+    if (requireEmpresa) {
+      requireStringField(payload.empresa_id, "empresa_id");
+    }
     requireArrayField(payload.lojas_ids, "lojas_ids");
     requireArrayField(payload.categorias_ids, "categorias_ids");
     requireBooleanField(payload.ativo, "ativo");
@@ -1154,7 +1250,7 @@ async function processPendingUploads(empresaId = null) {
   const resultados = [];
 
   for (const file of files) {
-    if (file.name.endsWith("/") || !file.name.toLowerCase().endsWith(".csv")) {
+    if (file.name.endsWith("/") || !isSupportedImportFile(file.name)) {
       continue;
     }
 
@@ -1165,6 +1261,10 @@ async function processPendingUploads(empresaId = null) {
 }
 
 async function processCsvFile(bucket, filePath) {
+  if (!isSupportedImportFile(filePath)) {
+    return {status: "ignorado", filePath};
+  }
+
   const fileName = path.basename(filePath);
   const tempFilePath = path.join(os.tmpdir(), `${Date.now()}_${fileName}`);
   let errorPath = `erro/${fileName}`;
@@ -1177,7 +1277,9 @@ async function processCsvFile(bucket, filePath) {
 
     await bucket.file(filePath).download({destination: tempFilePath});
 
-    const rows = await readCsv(tempFilePath, fileInfo.empresaId);
+    const rows = await parseImportFile(tempFilePath, fileInfo.tipoArquivo, fileInfo.empresaId, {
+      maxRows: MAX_CSV_ROWS_PER_FILE,
+    });
     await saveRows(collectionName, rows);
     await bucket.file(filePath).move(processedPath);
 
@@ -1216,7 +1318,7 @@ function identifyFile(filePath) {
 
   const parts = filePath.split("/");
   const fileName = path.basename(filePath);
-  const nameWithoutExtension = path.basename(fileName, ".csv");
+  const nameWithoutExtension = path.basename(fileName, getImportFileExtension(fileName));
   const match = nameWithoutExtension.match(/^(.+)_(vendas|estoque|produto|produtos)_\d{2}_\d{2}_\d{4}$/i);
 
   if (match) {
@@ -1244,50 +1346,6 @@ function collectionForFileType(fileType) {
   }
 
   throw new Error(`Tipo de arquivo invalido: ${fileType}`);
-}
-
-function readCsv(tempFilePath, empresaId) {
-  return new Promise((resolve, reject) => {
-    const rows = [];
-    let rejected = false;
-
-    fs.createReadStream(tempFilePath)
-      .pipe(csv({
-        separator: ",",
-        mapHeaders: ({header}) => normalizeHeader(header),
-        mapValues: ({value}) => typeof value === "string" ? value.trim() : value,
-      }))
-      .on("data", (data) => {
-        if (rows.length >= MAX_CSV_ROWS_PER_FILE) {
-          if (!rejected) {
-            rejected = true;
-            reject(new Error(`CSV excede o limite de ${MAX_CSV_ROWS_PER_FILE} linhas por arquivo.`));
-          }
-          return;
-        }
-
-        const row = {};
-
-        for (const originalKey in data) {
-          const key = normalizeHeader(originalKey);
-          row[key] = parseCsvValue(key, data[originalKey]);
-        }
-
-        row.empresa_id = empresaId;
-        rows.push(row);
-      })
-      .on("end", () => {
-        if (!rejected) {
-          resolve(rows);
-        }
-      })
-      .on("error", (error) => {
-        if (!rejected) {
-          rejected = true;
-          reject(error);
-        }
-      });
-  });
 }
 
 async function saveRows(collectionName, rows) {
@@ -3208,6 +3266,53 @@ async function requireAdminTenantAccess(req, res, next) {
     }
 
     req.authUser = decodedToken;
+    next();
+  } catch (error) {
+    sendError(res, error);
+  }
+}
+
+async function requireAdminUserContext(req, res, next) {
+  try {
+    const firebaseToken = getFirebaseTokenFromRequest(req);
+    if (!firebaseToken) {
+      res.status(401).json({
+        ok: false,
+        error: "Token Firebase obrigatorio. Envie Authorization: Bearer <token> ou header x-firebase-token.",
+      });
+      return;
+    }
+
+    initializeFirebase();
+    const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+    const userDoc = await db.collection("usuarios").doc(decodedToken.uid).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    const role = decodedToken.role || decodedToken.perfil || userData.role || userData.perfil || "";
+    const isAdmin = decodedToken.admin === true || role === "admin" || role === "gestor";
+
+    if (!isAdmin) {
+      res.status(403).json({ok: false, error: "Apenas administradores podem criar usuarios."});
+      return;
+    }
+
+    const empresaId = decodedToken.empresa_id || decodedToken.empresaId ||
+      userData.empresa_id || userData.empresaId || null;
+    if (!empresaId) {
+      res.status(400).json({ok: false, error: "Usuario administrador sem empresa_id vinculado."});
+      return;
+    }
+
+    const empresaNome = decodedToken.empresa_nome || decodedToken.empresaNome ||
+      userData.empresa_nome || userData.empresaNome ||
+      DEFAULT_EMPRESA_LABELS[empresaId] || empresaId;
+
+    req.authUser = decodedToken;
+    req.adminUserContext = {
+      uid: decodedToken.uid,
+      role,
+      empresa_id: String(empresaId).trim(),
+      empresa_nome: String(empresaNome || empresaId).trim(),
+    };
     next();
   } catch (error) {
     sendError(res, error);
