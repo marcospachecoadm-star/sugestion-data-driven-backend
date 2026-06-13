@@ -733,7 +733,7 @@ async function handleAdminUsersManagement(req, res) {
     const empresaData = empresaSnapshot.exists ? empresaSnapshot.data() : {};
     const empresaNome = empresaData.empresa_nome || empresaData.nome ||
       DEFAULT_EMPRESA_LABELS[empresaId] || empresaId;
-    const usuariosGestao = usuarios
+    const usuariosGestao = dedupeManagementUsers(usuarios)
       .map((usuario) => buildManagementUserResponse(usuario, empresaId, empresaNome))
       .sort(compareManagementUsers);
     const totalAtivos = usuariosGestao.filter((usuario) => usuario.ativo).length;
@@ -845,12 +845,15 @@ function buildManagementUserResponse(usuario, empresaId, fallbackEmpresaNome) {
   const perfil = usuario.perfil || usuario.role || "consulta";
   const ativo = isManagementUserActive(usuario);
   const empresaNome = usuario.empresa_nome || usuario.empresaNome || fallbackEmpresaNome;
+  const nome = usuario.nome || usuario.name || usuario.displayName || "";
+  const email = usuario.email || "";
 
   return {
     uid: usuario.uid,
     id: usuario.uid,
-    nome: usuario.nome || usuario.name || usuario.displayName || "",
-    email: usuario.email || "",
+    nome,
+    email,
+    iniciais: getUserInitials(nome, email),
     empresa_id: empresaId,
     empresaId,
     empresa_nome: empresaNome,
@@ -867,6 +870,62 @@ function buildManagementUserResponse(usuario, empresaId, fallbackEmpresaNome) {
     status_color: usuario.status_color || (ativo ? "#166534" : "#991B1B"),
     status_bg_color: usuario.status_bg_color || (ativo ? "#DCFCE7" : "#FEE2E2"),
   };
+}
+
+function dedupeManagementUsers(usuarios) {
+  const usersByIdentity = new Map();
+
+  for (const usuario of usuarios) {
+    const key = getManagementUserIdentity(usuario);
+    const current = usersByIdentity.get(key);
+
+    if (!current || isPreferredManagementUser(usuario, current)) {
+      usersByIdentity.set(key, usuario);
+    }
+  }
+
+  return Array.from(usersByIdentity.values());
+}
+
+function getManagementUserIdentity(usuario) {
+  const email = String(usuario.email || "").trim().toLowerCase();
+  return email || String(usuario.uid || "").trim();
+}
+
+function isPreferredManagementUser(candidate, current) {
+  const candidateActive = isManagementUserActive(candidate);
+  const currentActive = isManagementUserActive(current);
+
+  if (candidateActive !== currentActive) {
+    return candidateActive;
+  }
+
+  const candidateHasUidMatch = candidate.uid && candidate.uid === candidate.id;
+  const currentHasUidMatch = current.uid && current.uid === current.id;
+
+  if (candidateHasUidMatch !== currentHasUidMatch) {
+    return candidateHasUidMatch;
+  }
+
+  return String(candidate.uid || "").localeCompare(String(current.uid || "")) < 0;
+}
+
+function getUserInitials(nome, email) {
+  const words = String(nome || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (words.length >= 2) {
+    return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase();
+  }
+
+  if (words.length === 1 && words[0].length >= 2) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+
+  const emailPrefix = String(email || "").split("@")[0] || "";
+  return (emailPrefix.slice(0, 2) || "US").toUpperCase();
 }
 
 function isManagementUserActive(usuario) {
